@@ -109,6 +109,22 @@ class TestConfigurationIssues:
             clean_env.setenv("DATABASE_URL", f"{scheme}://u:p@localhost/db")
             assert make_settings().configuration_issues() == []
 
+    def test_accepts_driver_qualified_postgres_url(self, clean_env) -> None:
+        clean_env.setenv(
+            "DATABASE_URL",
+            "postgresql+psycopg2://u:p@localhost:5432/reconagent",
+        )
+        settings = make_settings()
+        assert settings.configuration_issues() == []
+        assert settings.database_url_supported is True
+
+    def test_database_url_supported_flags_bad_scheme(self, clean_env) -> None:
+        clean_env.setenv("DATABASE_URL", "mysql://u:p@localhost/db")
+        assert make_settings().database_url_supported is False
+
+    def test_database_url_supported_when_unset(self, clean_env) -> None:
+        assert make_settings().database_url_supported is True
+
 
 class TestCachedSettings:
     def test_get_settings_is_cached(self, monkeypatch) -> None:

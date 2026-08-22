@@ -14,8 +14,21 @@ async function request(path, options = {}) {
   return response.json()
 }
 
-export function getHealth() {
-  return request('/health')
+/**
+ * @typedef {Object} HealthResponse
+ * @property {"ok"} status
+ */
+
+/**
+ * @returns {Promise<HealthResponse>}
+ * @throws {Error} on HTTP errors, network failures, or an unexpected payload.
+ */
+export async function getHealth() {
+  const data = await request('/health')
+  if (data === null || typeof data !== 'object' || data.status !== 'ok') {
+    throw new Error('Unexpected /health response payload')
+  }
+  return data
 }
 
 export function getApiBaseUrl() {

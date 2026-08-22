@@ -14,8 +14,16 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
 
-_ALLOWED_DATABASE_SCHEMES = frozenset({"postgresql", "postgres"})
 DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
+
+
+def _is_supported_database_url(url: str) -> bool:
+    """Accept ``postgresql://``, ``postgres://`` and driver-qualified
+    forms such as ``postgresql+psycopg2://``. Reject everything else."""
+    scheme = url.split("://", 1)[0].lower()
+    return scheme in {"postgresql", "postgres"} or scheme.startswith(
+        "postgresql+"
+    )
 
 
 class Settings(BaseSettings):
@@ -52,6 +60,13 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.environment == "production"
 
+    @property
+    def database_url_supported(self) -> bool:
+        """Whether DATABASE_URL, when set, is a supported PostgreSQL URL."""
+        return self.database_url is None or _is_supported_database_url(
+            self.database_url
+        )
+
     def configuration_issues(self) -> list[str]:
         """Return human-readable misconfiguration problems (empty when valid).
 
@@ -61,13 +76,13 @@ class Settings(BaseSettings):
         """
         issues: list[str] = []
 
-        if self.database_url:
+        if self.database_url and not _is_supported_database_url(self.database_url):
             scheme = self.database_url.split("://", 1)[0].lower()
-            if scheme not in _ALLOWED_DATABASE_SCHEMES:
-                issues.append(
-                    f"DATABASE_URL scheme '{scheme}://' is not supported; "
-                    "expected postgresql://"
-                )
+            issues.append(
+                f"DATABASE_URL scheme '{scheme}://' is not supported; "
+                "expected postgresql:// (optionally with a driver, e.g. "
+                "postgresql+psycopg2://)"
+            )
 
         if self.is_production:
             if self.jwt_secret is None:

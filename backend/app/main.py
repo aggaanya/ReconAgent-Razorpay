@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
 from app.core.config import get_settings
+from app.db.session import reset_engine
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.environment,
     )
     yield
+    reset_engine()
     logger.info("Shutting down %s", settings.app_name)
 
 

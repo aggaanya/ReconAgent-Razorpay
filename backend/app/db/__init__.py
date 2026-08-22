@@ -1,6 +1,6 @@
-"""Database layer.
+"""Database infrastructure.
 
-Reserved for Phase 2: SQLAlchemy engine/session wiring against the
-``DATABASE_URL`` from :mod:`app.core.config`. No schema or migrations exist in
-Phase 1 by design.
+Phase 2 foundation: declarative base (:mod:`app.db.base`), engine/session
+management (:mod:`app.db.session`), and Alembic migrations at ``backend/alembic``.
+Domain models belong in ``app/models/`` (later chunks), never here.
 """
