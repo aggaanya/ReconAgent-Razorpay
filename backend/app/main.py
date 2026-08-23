@@ -8,9 +8,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.finance import router as finance_router
 from app.api.health import router as health_router
+from app.api.razorpay import reset_razorpay_service, router as razorpay_router
+from app.api.sync import reset_sync_service, router as sync_router
 from app.core.config import get_settings
-from app.db.session import reset_engine
+from app.db.session import DatabaseNotConfiguredError, reset_engine
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.environment,
     )
     yield
+    reset_razorpay_service()
+    reset_sync_service()
     reset_engine()
     logger.info("Shutting down %s", settings.app_name)
 
@@ -37,7 +42,7 @@ def create_app() -> FastAPI:
         version=settings.version,
         description=(
             "ReconAgent backend — AI finance controller for multi-source "
-            "reconciliation. Phase 1 foundation."
+            "reconciliation. Phase 2: read-only Razorpay integration."
         ),
         lifespan=lifespan,
     )
@@ -51,6 +56,17 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
+    app.include_router(razorpay_router)
+    app.include_router(sync_router)
+    app.include_router(finance_router)
+
+    @app.exception_handler(DatabaseNotConfiguredError)
+    async def database_not_configured_handler(
+        request: Request, exc: DatabaseNotConfiguredError
+    ) -> JSONResponse:
+        """Unconfigured DATABASE_URL is a deployment state, not a crash:
+        every DB-backed route answers with a clear 503."""
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(

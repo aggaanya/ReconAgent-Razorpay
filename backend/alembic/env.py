@@ -18,11 +18,15 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
+import app.db.models  # noqa: E402,F401  (registers all models on metadata)
 
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``disable_existing_loggers=False`` is essential: the default (True)
+    # flips ``logger.disabled`` on every logger created before Alembic runs,
+    # silently killing application logging for the rest of the process.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
