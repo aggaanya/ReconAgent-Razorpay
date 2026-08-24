@@ -6,12 +6,13 @@ and OpenAPI documentation for every route. No provider calls anywhere —
 the finance surface reads only local persistence.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
+from app.core.periods import REPORTING_TIMEZONE
 from app.db.session import get_db
 from app.main import app
 
@@ -113,8 +114,11 @@ class TestSummaryEndpoint:
         assert item["transaction_count"] == 1
         assert item["successful_amount_minor"] == 500_000
         assert item["refunded_amount_minor"] == 100_000
-        # Exact integer math: net = successful - refunded.
-        assert item["net_amount_minor"] == 400_000
+        # Exact integer math across the three §3.4 net variants
+        # (no single ambiguous "net" field is exposed).
+        assert item["net_of_refunds_minor"] == 400_000  # 500_000 - 100_000
+        assert item["net_of_fees_minor"] == 500_000  # no fees seeded
+        assert item["net_of_refunds_and_fees_minor"] == 400_000
 
     def test_summary_window_filter(self, finance_client):
         client, session_factory = finance_client
@@ -226,6 +230,125 @@ class TestUnconfiguredDatabase:
             get_settings.cache_clear()
 
 
+class TestMetricEndpoints:
+    """Deterministic metric routes: /payment-performance, /revenue, /trends.
+
+    Named periods resolve against the reporting clock in IST, so seeds are
+    stamped relative to the current IST day (stored as UTC instants).
+    """
+
+    @staticmethod
+    def _seed_one_per_ist_day(session):
+        from app.db.mappers import payment_from_normalized
+        from app.db.repositories import PaymentRepository
+        from app.schemas import NormalizedPayment
+
+        now_ist = datetime.now(tz=REPORTING_TIMEZONE)
+        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        # "today" must land inside the half-open [today_start, now) window
+        # at ANY hour of day, so stamp it relative to now rather than a
+        # fixed 01:00 (which falls outside the window right after midnight).
+        stamps = (
+            ("today", max(today_start, now_ist - timedelta(minutes=5))),
+            ("yesterday", today_start - timedelta(hours=1)),
+        )
+        for label, when_ist in stamps:
+            row = payment_from_normalized(
+                NormalizedPayment(
+                    provider="razorpay",
+                    external_id=f"pay_metric_{label}",
+                    amount_minor=400_000,
+                    currency="INR",
+                    status="captured",
+                    method="upi",
+                    order_id=f"order_metric_{label}",
+                    created_at=when_ist.astimezone(timezone.utc),
+                )
+            )
+            PaymentRepository(session).upsert(row)
+        session.commit()
+
+    def test_payment_performance_named_period(self, finance_client):
+        client, session_factory = finance_client
+        self._seed_one_per_ist_day(session_factory())
+
+        yesterday = client.get(
+            "/api/v1/finance/payment-performance", params={"period": "yesterday"}
+        ).json()
+        assert yesterday["transaction_volume"] == 1
+        assert yesterday["successful_transactions"] == 1
+        assert yesterday["success_rate"]["value"] == 100.0
+        assert yesterday["period"]["timezone"] == "Asia/Kolkata"
+        assert yesterday["currency"] == "INR"
+
+        today = client.get(
+            "/api/v1/finance/payment-performance", params={"period": "today"}
+        ).json()
+        assert today["transaction_volume"] == 1
+
+    def test_payment_performance_rejects_unknown_period(self, finance_client):
+        client, _ = finance_client
+        response = client.get(
+            "/api/v1/finance/payment-performance", params={"period": "tomorrow"}
+        )
+        assert response.status_code == 422
+
+    def test_revenue_endpoint_exact_variants(self, finance_client):
+        client, session_factory = finance_client
+        self._seed_one_per_ist_day(session_factory())
+
+        body = client.get(
+            "/api/v1/finance/revenue", params={"period": "today"}
+        ).json()
+        assert body["gross_revenue_minor"] == 400_000
+        assert body["net_revenue"]["net_of_refunds_minor"] == 400_000
+        assert body["net_revenue"]["net_of_fees_minor"] == 400_000
+        assert body["refunds"]["refund_count"] == 0
+        # Zero gross would be undefined; here gross > 0 with no refunds -> 0%.
+        assert body["refunds"]["refund_rate"]["value"] == 0.0
+
+    def test_trend_endpoint_contract_and_validation(self, finance_client):
+        client, session_factory = finance_client
+        self._seed_one_per_ist_day(session_factory())
+
+        body = client.get(
+            "/api/v1/finance/trends/transaction_volume",
+            params={"granularity": "day"},
+        ).json()
+        assert body["metric"] == "transaction_volume"
+        assert body["current_period"]["value"] == 1
+        assert body["previous_period"]["value"] == 1
+        assert body["absolute_change"] == 0
+        assert body["percentage_change"] == 0.0
+        assert body["change_type"] == "normal"
+        assert body["timezone"] == "Asia/Kolkata"
+
+    def test_trend_endpoint_rejects_unknown_metric_and_granularity(
+        self, finance_client
+    ):
+        client, _ = finance_client
+        assert client.get("/api/v1/finance/trends/not_a_metric").status_code == 422
+        assert client.get(
+            "/api/v1/finance/trends/gross_revenue",
+            params={"granularity": "quarter"},
+        ).status_code == 422
+
+    def test_metric_endpoints_require_database(self, monkeypatch):
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        get_settings.cache_clear()
+        try:
+            with TestClient(app) as client:
+                for path in (
+                    "/api/v1/finance/payment-performance",
+                    "/api/v1/finance/revenue",
+                    "/api/v1/finance/trends/gross_revenue",
+                ):
+                    response = client.get(path)
+                    assert response.status_code == 503, path
+        finally:
+            get_settings.cache_clear()
+
+
 class TestOpenApiDocumentation:
     def test_all_finance_routes_documented(self, client):
         schema = client.get("/openapi.json").json()
@@ -234,10 +357,13 @@ class TestOpenApiDocumentation:
         ]
         assert sorted(finance_paths) == [
             "/api/v1/finance/orders",
+            "/api/v1/finance/payment-performance",
             "/api/v1/finance/payments",
             "/api/v1/finance/refunds",
+            "/api/v1/finance/revenue",
             "/api/v1/finance/settlements",
             "/api/v1/finance/summary",
+            "/api/v1/finance/trends/{metric}",
         ]
         for path in finance_paths:
             operation = schema["paths"][path]["get"]

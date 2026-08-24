@@ -63,16 +63,38 @@ class CountSumAggregate:
 
 @dataclass(frozen=True)
 class PaymentAggregate(CountSumAggregate):
-    """Payment-specific finance aggregates.
+    """Payment-specific finance aggregates (specification Part 2/3).
 
-    ``captured_*`` uses Razorpay's literal ``captured`` status (the only
-    state meaning money actually moved in); ``failed_count`` its literal
-    ``failed`` status.
+    ``successful_*`` covers Razorpay payments whose status means money was
+    captured — ``captured`` plus ``refunded`` (a refunded payment was
+    necessarily captured first; spec §2.0 explicit rule and §3.6
+    recommendation). ``failed_count`` is the literal ``failed`` status;
+    every other status (``created``/``authorized``/unknown) is in-progress
+    and derivable as ``count - successful_count - failed_count``.
+
+    ``fee_minor_sum`` / ``tax_minor_sum`` sum Razorpay's per-payment fee
+    and tax over the successful population only (spec §3.5), with NULL
+    fees/taxes treated as 0.
     """
 
-    captured_amount_minor: int = 0
-    captured_count: int = 0
+    successful_amount_minor: int = 0
+    successful_count: int = 0
     failed_count: int = 0
+    refunded_count: int = 0
+    fee_minor_sum: int = 0
+    tax_minor_sum: int = 0
+
+
+@dataclass(frozen=True)
+class SettlementAggregate(CountSumAggregate):
+    """Settlement finance aggregates (specification Part 5.2).
+
+    All three amounts are direct fields on the Settlement entity — no
+    derivation, no prediction.
+    """
+
+    fees_minor_sum: int = 0
+    tax_minor_sum: int = 0
 
 
 def upsert_instance(

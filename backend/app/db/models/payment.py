@@ -43,6 +43,33 @@ NotesJSON = JSON().with_variant(JSONB(), "postgresql")
 # Razorpay ids are ~18 chars ("pay_" + 14); 64 leaves generous headroom.
 RAZORPAY_ID_LENGTH = 64
 
+# Documented Payment.status enum (spec §1.1 / §2.0, razorpay.com/docs/api/
+# payments/entity/). Classification per FINANCE_METRICS_SPECIFICATION.md
+# §2.0: "captured" is successful; "refunded" also counts as successful
+# (it is reached only after capture — spec §2.0 explicit rule and §3.6
+# recommendation, confirmed by Part 13 case #6); "failed" is failed;
+# "created"/"authorized" are in-progress and excluded from both buckets;
+# anything else is unknown and must be anomaly-logged, never silently
+# classified.
+PAYMENT_STATUS_CREATED = "created"
+PAYMENT_STATUS_AUTHORIZED = "authorized"
+PAYMENT_STATUS_CAPTURED = "captured"
+PAYMENT_STATUS_REFUNDED = "refunded"
+PAYMENT_STATUS_FAILED = "failed"
+PAYMENT_SUCCESS_STATUSES = frozenset(
+    {PAYMENT_STATUS_CAPTURED, PAYMENT_STATUS_REFUNDED}
+)
+PAYMENT_FAILED_STATUSES = frozenset({PAYMENT_STATUS_FAILED})
+PAYMENT_KNOWN_STATUSES = frozenset(
+    {
+        PAYMENT_STATUS_CREATED,
+        PAYMENT_STATUS_AUTHORIZED,
+        PAYMENT_STATUS_CAPTURED,
+        PAYMENT_STATUS_REFUNDED,
+        PAYMENT_STATUS_FAILED,
+    }
+)
+
 
 class Payment(TimestampMixin, Base):
     """One Razorpay payment, persisted verbatim from the normalized schema."""

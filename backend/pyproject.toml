@@ -3,3 +3,6 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers"
 filterwarnings = ["error::DeprecationWarning:app.*"]
+markers = [
+    "live_llm: opt-in tests that call a real LLM provider (requires RECONAGENT_LLM_LIVE_TEST=1 and LLM_API_KEY)",
+]

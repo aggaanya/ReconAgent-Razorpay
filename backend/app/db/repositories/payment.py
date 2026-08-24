@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import Payment
+from ..models.payment import PAYMENT_FAILED_STATUSES, PAYMENT_SUCCESS_STATUSES
 from .base import (
     model_values,
     paginate,
@@ -186,6 +187,27 @@ class PaymentRepository:
             filters.append(Payment.method == method)
         return filters
 
+    def distinct_statuses(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        currency: str | None = None,
+    ) -> list[str | None]:
+        """Distinct stored payment statuses in the window (anomaly scans).
+
+        Used by the metrics service to detect status values outside
+        Razorpay's documented enum (specification Part 11) without loading
+        full rows.
+        """
+        filters = self._finance_filters(
+            start=start, end=end, currency=currency, status=None, method=None
+        )
+        rows = self._session.execute(
+            select(Payment.status).distinct().where(*filters)
+        ).all()
+        return [row[0] for row in rows]
+
     def aggregate_by_currency(
         self,
         *,
@@ -198,23 +220,35 @@ class PaymentRepository:
         """Finance aggregates per currency over the filtered window.
 
         Keys are the stored ``currency`` values (``None`` included when the
-        provider omitted it). All sums are exact minor-unit integers.
+        provider omitted it). All sums are exact minor-unit integers. The
+        successful population is ``captured`` + ``refunded`` (spec §2.0/§3.6);
+        fee/tax sums cover that population with NULLs as zero (spec §3.5).
         """
         filters = self._finance_filters(
             start=start, end=end, currency=currency, status=status, method=method
         )
-        captured = Payment.status == "captured"
-        failed = Payment.status == "failed"
+        success = Payment.status.in_(PAYMENT_SUCCESS_STATUSES)
+        failed = Payment.status.in_(PAYMENT_FAILED_STATUSES)
+        refunded = Payment.status == "refunded"
+        fee_over_success = case(
+            (success, func.coalesce(Payment.fee_minor, 0)), else_=0
+        )
+        tax_over_success = case(
+            (success, func.coalesce(Payment.tax_minor, 0)), else_=0
+        )
         rows = self._session.execute(
             select(
                 Payment.currency,
                 func.count(),
                 func.coalesce(func.sum(Payment.amount_minor), 0),
                 func.coalesce(
-                    func.sum(case((captured, Payment.amount_minor), else_=0)), 0
+                    func.sum(case((success, Payment.amount_minor), else_=0)), 0
                 ),
-                func.coalesce(func.sum(case((captured, 1), else_=0)), 0),
+                func.coalesce(func.sum(case((success, 1), else_=0)), 0),
                 func.coalesce(func.sum(case((failed, 1), else_=0)), 0),
+                func.coalesce(func.sum(case((refunded, 1), else_=0)), 0),
+                func.coalesce(func.sum(fee_over_success), 0),
+                func.coalesce(func.sum(tax_over_success), 0),
             )
             .where(*filters)
             .group_by(Payment.currency)
@@ -223,9 +257,13 @@ class PaymentRepository:
             row_currency: PaymentAggregate(
                 count=int(row_count),
                 amount_minor=int(gross),
-                captured_amount_minor=int(captured_amount),
-                captured_count=int(captured_count),
+                successful_amount_minor=int(successful_amount),
+                successful_count=int(successful_count),
                 failed_count=int(failed_count),
+                refunded_count=int(refunded_count),
+                fee_minor_sum=int(fee_sum),
+                tax_minor_sum=int(tax_sum),
             )
-            for row_currency, row_count, gross, captured_amount, captured_count, failed_count in rows
+            for row_currency, row_count, gross, successful_amount,
+            successful_count, failed_count, refunded_count, fee_sum, tax_sum in rows
         }

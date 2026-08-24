@@ -10,18 +10,23 @@ The authoritative product/technical blueprint is [`docs/ReconAgent_Master_Spec.m
 
 ## Current status
 
-**Phase 1 (Project Setup) is implemented and verified on this machine:**
+**Implemented and verified on this machine:**
 
-| Check | Result |
+| Module | Status |
 |---|---|
-| Backend boots (`uvicorn app.main:app`) | ✅ verified |
-| `GET /health` → `200 {"status": "ok"}` | ✅ verified |
-| `GET /readiness` configuration probe | ✅ verified (works with no database/secrets configured) |
-| Backend test suite | ✅ 34/34 passing (`pytest`) |
-| Frontend production build (`npm run build`) | ✅ passes cleanly |
-| Frontend → backend health call wiring | ✅ implemented (real `fetch` to `GET /health`; status rendered dynamically) |
+| Backend FastAPI service (`/health`, `/readiness`), PostgreSQL schema + Alembic migrations, Razorpay integration & sync | ✅ implemented |
+| Finance metrics + REST APIs (`/api/v1/finance/*`) | ✅ implemented |
+| Deterministic reconciliation engine (Track 04) — fixed rules R0–R9, refund integrity, fee/tax expected settlement, typed exception reasons, compound exceptions | ✅ implemented (`backend/app/services/reconciliation.py`) |
+| Synthetic 100-record dataset with per-case ground truth + evaluation benchmark (`scripts/reconcile_benchmark.py`) — measured match rate and **100% benchmark accuracy**, precision/recall/F1 | ✅ implemented |
+| LangGraph workflow (plan → execute tools → analyze signals → interpret) over read-only finance tools | ✅ implemented (`backend/app/ai/graph/`) |
+| LLM explanation layer — **AI is explanation-only**: it describes engine-computed facts and never calculates financial truth | ✅ implemented (`backend/app/ai/llm.py`) |
+| AI reconciliation endpoint `POST /api/v1/ai/reconcile` (+ `POST /api/v1/ai/chat`) | ✅ implemented |
+| Frontend reconciliation dashboard (summary cards, match breakdown, typed exception table, opt-in AI narrative) | ✅ implemented (`frontend/src/pages/ReconciliationPage.jsx`) |
+| Backend test suite | ✅ **728+ passing** (`pytest`; count subject to the latest run) |
 
-Later phases (database schema, ingestion, matching, AI, approvals, dashboard) are **not** implemented — see [Deferred phases](#deferred-phases-intentionally-not-implemented).
+Ground truth exists only in the synthetic generator, tests, and the benchmark — never as an input to the engine or any serving path.
+
+Still deferred: human-approval workflow, bank-statement (third-source) ingestion, authentication/RBAC, production deployment, frontend test framework — see [Deferred phases](#deferred-phases-intentionally-not-implemented).
 
 ---
 
@@ -96,17 +101,17 @@ razorpay/                          # monorepo root
 
 | Phase | Goal | Status |
 |---|---|---|
-| **1. Project Setup** | Repo structure, environments; FastAPI + React skeletons boot and talk via `/health` | **Complete (this commit)** |
-| 2. Database | PostgreSQL schema via SQLAlchemy + Alembic | Deferred |
-| 3. Synthetic Data | 50+ record labeled dataset across 3 CSVs | Deferred |
-| 4. Data Ingestion | CSV upload endpoints + validation | Deferred |
-| 5. Deterministic Matching Engine | Matching, tolerance, match rate | Deferred |
-| 6. Exception Management | Exception queue + tracking | Deferred |
-| 7–8. AI Investigation | Agent tools, LangGraph state machine | Deferred |
+| **1. Project Setup** | Repo structure, environments; FastAPI + React skeletons boot and talk via `/health` | **Complete** |
+| 2. Database | PostgreSQL schema via SQLAlchemy + Alembic | **Complete** |
+| 3. Synthetic Data | Labeled dataset for evaluation | **Complete** (seeded 100-record reconciliation batch; CSV datasets superseded by Razorpay API sync) |
+| 4. Data Ingestion | Provider ingestion + validation | **Complete** (Razorpay API sync with upserts; CSV upload endpoints not built) |
+| 5. Deterministic Matching Engine | Matching, tolerance, match rate | **Complete** (Track 04 payments-vs-settlements loop with rules R0–R9) |
+| 6. Exception Management | Exception queue + tracking | Partial (typed exception report/table; no approval queue yet) |
+| 7–8. AI Investigation | Agent tools, LangGraph state machine | Mostly complete (read-only tools, LangGraph workflow, signal analysis, LLM explanation) |
 | 9. Human Approval | Approve/reject/resolve workflow | Deferred |
-| 10. Dashboard | Full React dashboard (KPIs, queue, detail views) | Deferred |
-| 11. Razorpay Integration | Exploratory feasibility assessment | Deferred |
-| 12–13. Testing & Demo Prep | Extended test suites + demo rehearsal | Deferred |
+| 10. Dashboard | React dashboard | Partial (reconciliation dashboard live; full KPI/queue views pending) |
+| 11. Razorpay Integration | Exploratory feasibility assessment | **Complete** (production-style client + sync verified with mocks/fakes) |
+| 12–13. Testing & Demo Prep | Extended test suites + demo rehearsal | In progress (728+ backend tests passing) |
 
 ---
 
@@ -137,7 +142,8 @@ Copy-Item frontend\.env.example frontend\.env
 
 Then edit `backend\.env`:
 - Replace `CHANGE_ME` values (`JWT_SECRET`, `DATABASE_URL` password).
-- All credentials are optional for Phase 1; the service boots without them.
+- All credentials are optional; the service boots and the demo runs without them.
+- **Zero-credential Track 04 demo:** the reconciliation dashboard loads a seeded synthetic batch by default — Razorpay keys are only needed for live API sync.
 - Generate a strong JWT secret:
 
 ```powershell
@@ -168,6 +174,14 @@ npm run dev
 
 The page shows **Backend Status: Connected / Unavailable**, driven by a real request to `GET /health` (never hardcoded).
 
+### Demo flow (no credentials required)
+
+1. Open http://localhost:5173 — the **Batch Reconciliation** tab is the default and loads the **Synthetic Demo Dataset** (seeded 100-record batch) automatically.
+2. Engine-computed facts render immediately: summary cards, match breakdown, typed exception table.
+3. Flip **AI explanation** to request an LLM narrative (needs `LLM_API_KEY`; the deterministic report is unaffected without it).
+4. The **Reconciliation Evaluation** card shows measured quality for the same batch — accuracy, precision/recall/F1, FP/FN, throughput — from the evaluation-only surface `GET /api/v1/ai/reconcile/evaluation` (isolated ground truth; the serving API never sees it).
+5. **System Status** tab shows backend connectivity. Razorpay API integration stays optional — its endpoints answer with a sanitized `not_configured` response until keys are set.
+
 ---
 
 ## Development commands
@@ -189,9 +203,11 @@ Backend (pytest) — from `backend/` with the venv active:
 .\.venv\Scripts\python.exe -m pytest -q        # or simply: pytest
 ```
 
-Covers: application startup/lifespan, `/health` contract, `/readiness` behavior, settings loading/validation, and CORS preflight/origin enforcement (34 tests).
+Covers: application startup/lifespan, `/health` and `/readiness` contracts, settings loading, CORS, Razorpay client/sync/repositories, finance metrics and APIs, the deterministic reconciliation engine (rules R0–R9, refund integrity, expected settlement, compound exceptions), the synthetic dataset/ground-truth alignment, the LangGraph workflow safety properties, and the AI endpoints — currently **735+ passing tests** (count subject to the latest run).
 
-Frontend: no automated frontend test framework is configured yet. This is intentional for Phase 1 (minimal dependencies; the UI surface is one status view). Vitest + Testing Library will be added when component logic grows beyond the current shell.
+Machine-readable evaluation: `backend/.venv/Scripts/python.exe scripts/reconcile_benchmark.py --json` prints the same payload as `GET /api/v1/ai/reconcile/evaluation` — accuracy/precision/recall/F1, TP/FP/FN, throughput and exception distribution measured against isolated ground truth (evaluation-only; serving responses keep `accuracy=null`).
+
+Frontend: no automated frontend test framework is configured yet. The UI surface is still presentation-only; Vitest + Testing Library will be added when component logic grows beyond rendering engine output.
 
 ---
 
@@ -220,7 +236,9 @@ Annotated templates: [`backend/.env.example`](backend/.env.example), [`frontend/
 | `CORS_ORIGINS` | backend | Phase 1 | `http://localhost:5173` (comma-separated) |
 | `DATABASE_URL` | backend | Phase 2 | `postgresql://user:pass@localhost:5432/reconagent` |
 | `JWT_SECRET` | backend | auth phase (mandatory in `production`) | `<64-char random hex>` |
-| `LLM_API_KEY` | backend | AI phases (mandatory in `production` validation) | *(provider key)* |
+| `LLM_API_KEY` | backend | AI foundation (mandatory in `production` validation) | *(provider key)* |
+| `LLM_MODEL` | backend | AI foundation | `gpt-4o-mini` |
+| `LLM_BASE_URL` / `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | backend | AI foundation (optional overrides) | *(unset)* / `30` / `2` |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | backend | integration phase | *(optional until then)* |
 | `VITE_API_BASE_URL` | frontend | Phase 1 | `http://localhost:8000` |
 
@@ -245,16 +263,16 @@ Annotated templates: [`backend/.env.example`](backend/.env.example), [`frontend/
 - [x] Frontend displays live backend status (Connected / Unavailable) from a real API call
 - [x] Environment-based configuration loading works (pydantic-settings, `.env` support)
 - [x] CORS configured per-environment for local development
-- [x] Backend tests pass (34/34); frontend build passes
+- [x] Backend tests pass (now 728+); frontend build passes
 
 ---
 
 ## Deferred phases (intentionally NOT implemented)
 
-Database schema and migrations (SQLAlchemy models, Alembic), CSV ingestion, synthetic data generation, reconciliation/matching logic, exception workflows, LLM/AI/LangGraph code, agent tools, Razorpay integration, Celery/Redis/background jobs, authentication/RBAC, audit logging, full dashboard, frontend test framework, deployment/Docker/Kubernetes infrastructure.
+Human-approval workflow (approve/reject/resolve + audit trail), bank-statement/third-source ingestion, CSV upload endpoints, authentication/RBAC, production deployment/Docker/Kubernetes infrastructure, background job infrastructure (Celery/Redis), frontend test framework.
 
-These belong to Phases 2–13 per the master spec. Nothing above should be built ahead of its phase.
+These remain open per the master spec's later phases; everything already implemented is covered in [Current status](#current-status).
 
 ## Next step
 
-**Phase 2 — Database:** define the SQLAlchemy models for the schema in master spec §19, configure Alembic migrations, wire a PostgreSQL session/engine module into `backend/app/db/`, extend `/readiness` with a live database connectivity check.
+**Exception management:** build the human-approval workflow on top of the existing typed exception report (queue, approve/reject/resolve decisions, audit trail) — the reconciliation engine and dashboard already produce the exception list it would operate on.

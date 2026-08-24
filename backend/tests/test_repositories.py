@@ -19,6 +19,7 @@ from app.db.repositories import (
     PaymentAggregate,
     PaymentRepository,
     RefundRepository,
+    SettlementAggregate,
     SettlementRepository,
     SyncRunRepository,
     UpsertResult,
@@ -568,7 +569,21 @@ class TestFinanceAggregates:
         assert isinstance(agg, PaymentAggregate)
         assert agg.count == 4
         assert agg.amount_minor == 4500
-        assert (agg.captured_amount_minor, agg.captured_count) == (3500, 2)
+        # Spec §2.0/§3.1: "successful" = captured (+ refunded-status).
+        assert (agg.successful_amount_minor, agg.successful_count) == (3500, 2)
+        assert agg.failed_count == 1
+
+    def test_refunded_status_joins_successful_population(self, payments):
+        """Spec §2.0/§3.6: refunded payments were captured -> successful."""
+        payments.upsert_many(
+            [
+                make_payment(1, status="refunded", amount_minor=1000),
+                make_payment(2, status="failed", amount_minor=700),
+            ]
+        )
+        agg = payments.aggregate_by_currency()["INR"]
+        assert (agg.successful_amount_minor, agg.successful_count) == (1000, 1)
+        assert agg.refunded_count == 1
         assert agg.failed_count == 1
 
     def test_payment_aggregate_respects_filters(self, payments):
@@ -599,7 +614,10 @@ class TestFinanceAggregates:
         settlements.upsert_many([make_settlement(1), make_settlement(2)])
         settlement_totals = settlements.aggregate_by_currency()
         # make_settlement omits currency; rows group under the None key.
-        assert settlement_totals[None] == CountSumAggregate(count=2, amount_minor=10003)
+        # Settlement aggregates also carry direct fee/tax field sums (§5.2).
+        assert settlement_totals[None] == SettlementAggregate(
+            count=2, amount_minor=10003, fees_minor_sum=50, tax_minor_sum=8
+        )
 
     def test_aggregates_over_empty_window_are_empty(self, payments):
         assert payments.aggregate_by_currency() == {}

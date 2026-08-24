@@ -4,9 +4,13 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import (
+    DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
     DEFAULT_RAZORPAY_BASE_URL,
     DEFAULT_RAZORPAY_MAX_RETRIES,
     DEFAULT_RAZORPAY_TIMEOUT_SECONDS,
+    LLM_MAX_RETRIES_UPPER_BOUND,
     RAZORPAY_MAX_RETRIES_UPPER_BOUND,
     Settings,
 )
@@ -15,6 +19,10 @@ CREDENTIAL_ENV_VARS = (
     "DATABASE_URL",
     "JWT_SECRET",
     "LLM_API_KEY",
+    "LLM_MODEL",
+    "LLM_BASE_URL",
+    "LLM_TIMEOUT_SECONDS",
+    "LLM_MAX_RETRIES",
     "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_BASE_URL",
@@ -100,6 +108,112 @@ class TestSecretHandling:
     def test_secret_value_accessible_internally(self, clean_env) -> None:
         clean_env.setenv("LLM_API_KEY", "sk-test-123")
         assert make_settings().llm_api_key.get_secret_value() == "sk-test-123"
+
+
+class TestLLMConfiguration:
+    """LLM_* settings: defaults, overrides, validation, configured state."""
+
+    def test_defaults(self, clean_env) -> None:
+        settings = make_settings()
+        assert settings.llm_api_key is None
+        assert settings.llm_model == DEFAULT_LLM_MODEL == "gpt-4o-mini"
+        assert settings.llm_base_url is None
+        assert settings.llm_timeout_seconds == DEFAULT_LLM_TIMEOUT_SECONDS
+        assert settings.llm_max_retries == DEFAULT_LLM_MAX_RETRIES
+        assert settings.llm_configured is False
+
+    def test_key_and_model_overrides(self, clean_env) -> None:
+        clean_env.setenv("LLM_API_KEY", "sk-test-123")
+        clean_env.setenv("LLM_MODEL", "gpt-custom")
+        settings = make_settings()
+        assert settings.llm_api_key.get_secret_value() == "sk-test-123"
+        assert settings.llm_model == "gpt-custom"
+        assert settings.llm_configured is True
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_blank_api_key_is_unconfigured(self, clean_env, raw) -> None:
+        # A half-filled .env must not masquerade as configured.
+        clean_env.setenv("LLM_API_KEY", raw)
+        settings = make_settings()
+        assert settings.llm_api_key is None
+        assert settings.llm_configured is False
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_blank_model_falls_back_to_default(self, clean_env, raw) -> None:
+        clean_env.setenv("LLM_MODEL", raw)
+        assert make_settings().llm_model == DEFAULT_LLM_MODEL
+
+    def test_base_url_override_normalizes_trailing_slash(self, clean_env) -> None:
+        clean_env.setenv("LLM_BASE_URL", "https://llm.example.com/v1/")
+        assert make_settings().llm_base_url == "https://llm.example.com/v1"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "http://llm.example.com/v1",  # insecure scheme
+            "ftp://llm.example.com/v1",
+            "llm.example.com/v1",  # no scheme
+        ],
+    )
+    def test_insecure_or_invalid_base_url_rejected(self, clean_env, raw) -> None:
+        clean_env.setenv("LLM_BASE_URL", raw)
+        with pytest.raises(ValidationError):
+            make_settings()
+
+    def test_blank_base_url_is_unset_not_invalid(self, clean_env) -> None:
+        clean_env.setenv("LLM_BASE_URL", "")
+        assert make_settings().llm_base_url is None
+
+    def test_timeout_override(self, clean_env) -> None:
+        clean_env.setenv("LLM_TIMEOUT_SECONDS", "12.5")
+        assert make_settings().llm_timeout_seconds == pytest.approx(12.5)
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "not-a-number", ""])
+    def test_non_positive_or_invalid_timeout_rejected(
+        self, clean_env, raw
+    ) -> None:
+        clean_env.setenv("LLM_TIMEOUT_SECONDS", raw)
+        with pytest.raises(ValidationError):
+            make_settings()
+
+    def test_max_retries_override(self, clean_env) -> None:
+        clean_env.setenv("LLM_MAX_RETRIES", "5")
+        assert make_settings().llm_max_retries == 5
+
+    def test_zero_max_retries_disables_retries(self, clean_env) -> None:
+        clean_env.setenv("LLM_MAX_RETRIES", "0")
+        assert make_settings().llm_max_retries == 0
+
+    @pytest.mark.parametrize("raw", ["-1", "11", "not-a-number"])
+    def test_invalid_max_retries_rejected(self, clean_env, raw) -> None:
+        clean_env.setenv("LLM_MAX_RETRIES", raw)
+        with pytest.raises(ValidationError):
+            make_settings()
+
+    def test_max_retries_upper_bound_constant_matches_validator(
+        self,
+    ) -> None:
+        assert LLM_MAX_RETRIES_UPPER_BOUND == 10
+
+    def test_key_masked_in_repr(self, clean_env) -> None:
+        secret = "super-secret-llm-key"
+        clean_env.setenv("LLM_API_KEY", secret)
+        settings = make_settings()
+        assert isinstance(settings.llm_api_key, SecretStr)
+        assert secret not in repr(settings)
+
+    def test_key_absent_from_validation_errors(self, clean_env) -> None:
+        # An unrelated invalid setting must never echo the LLM key.
+        clean_env.setenv("LLM_API_KEY", "super-secret-llm-key")
+        clean_env.setenv("LLM_TIMEOUT_SECONDS", "-5")
+        with pytest.raises(ValidationError) as exc_info:
+            make_settings()
+        assert "super-secret-llm-key" not in str(exc_info.value)
+
+    def test_production_requires_api_key(self, clean_env) -> None:
+        clean_env.setenv("ENVIRONMENT", "production")
+        issues = make_settings().configuration_issues()
+        assert any("LLM_API_KEY" in issue for issue in issues)
 
 
 class TestRazorpayConfiguration:

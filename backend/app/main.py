@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.ai import reset_ai_agent, router as ai_router
 from app.api.finance import router as finance_router
 from app.api.health import router as health_router
 from app.api.razorpay import reset_razorpay_service, router as razorpay_router
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.environment,
     )
     yield
+    reset_ai_agent()
     reset_razorpay_service()
     reset_sync_service()
     reset_engine()
@@ -59,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(razorpay_router)
     app.include_router(sync_router)
     app.include_router(finance_router)
+    app.include_router(ai_router)
 
     @app.exception_handler(DatabaseNotConfiguredError)
     async def database_not_configured_handler(

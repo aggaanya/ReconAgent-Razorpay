@@ -15,7 +15,7 @@ export default function SystemStatusPage() {
     <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <section className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">ReconAgent</h1>
-        <p className="mt-1 text-sm text-slate-500">Phase 1 &middot; Frontend / FastAPI connectivity check</p>
+        <p className="mt-1 text-sm text-slate-500">Frontend / FastAPI connectivity check</p>
 
         <div className="mt-6 rounded-lg border border-slate-200 p-4">
           <p className="text-sm font-medium text-slate-700">Backend Status:</p>
@@ -34,6 +34,11 @@ export default function SystemStatusPage() {
               <p className="text-xs text-red-600">{error || `Could not reach ${getApiBaseUrl()}/health`}</p>
             </div>
           )}
+
+          <p className="mt-3 text-xs text-slate-400">
+            Razorpay API integration is optional &mdash; reconciliation runs on
+            the synthetic demo dataset without any credentials.
+          </p>
         </div>
 
         <div className="mt-4 flex items-center justify-between text-xs text-slate-400">

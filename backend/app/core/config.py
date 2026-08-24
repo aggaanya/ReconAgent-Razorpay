@@ -6,7 +6,9 @@ future dependencies (database, LLM, Razorpay). Secret values use
 
 Razorpay settings (key id, secret, base URL, HTTP timeout, retry budget)
 are validated at startup and consumed by the client in
-``app.integrations.razorpay``.
+``app.integrations.razorpay``. LLM settings (model, optional base URL,
+timeout, retry budget) are validated here and consumed by the centralized
+service in ``app.ai.llm``.
 """
 
 from functools import lru_cache
@@ -29,6 +31,14 @@ DEFAULT_RAZORPAY_MAX_RETRIES = 3
 RAZORPAY_MAX_RETRIES_UPPER_BOUND = 10
 DEFAULT_RAZORPAY_RETRY_BASE_DELAY_SECONDS = 0.5
 DEFAULT_RAZORPAY_RETRY_MAX_DELAY_SECONDS = 30.0
+
+# LLM integration (consumed by app.ai.llm). The service targets the
+# OpenAI-compatible chat-completions API; LLM_BASE_URL may repoint it at
+# any compatible endpoint without code changes.
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
+DEFAULT_LLM_MAX_RETRIES = 2
+LLM_MAX_RETRIES_UPPER_BOUND = 10
 
 
 def _is_supported_database_url(url: str) -> bool:
@@ -63,6 +73,14 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None
     razorpay_key_secret: SecretStr | None = None
 
+    # LLM integration settings (consumed by app.ai.llm).
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_base_url: str | None = None
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
+    # Client-side retries for transient LLM failures (429/5xx/network);
+    # the SDK applies them before surfacing an error to the service.
+    llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
+
     # Razorpay integration settings (consumed by app.integrations.razorpay).
     razorpay_base_url: str = DEFAULT_RAZORPAY_BASE_URL
     razorpay_timeout_seconds: float = DEFAULT_RAZORPAY_TIMEOUT_SECONDS
@@ -92,13 +110,58 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
-    @field_validator("razorpay_key_id", "razorpay_key_secret", mode="before")
+    @field_validator(
+        "llm_api_key", "razorpay_key_id", "razorpay_key_secret", mode="before"
+    )
     @classmethod
-    def _blank_razorpay_credentials_are_unset(cls, value: object) -> object:
-        """Treat ``RAZORPAY_KEY_ID=``/``RAZORPAY_KEY_SECRET=`` as unset so a
-        half-filled .env cannot masquerade as configured."""
+    def _blank_credentials_are_unset(cls, value: object) -> object:
+        """Treat blank credential env values (``LLM_API_KEY=`` etc.) as
+        unset so a half-filled .env cannot masquerade as configured."""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("llm_model", mode="before")
+    @classmethod
+    def _blank_llm_model_uses_default(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return DEFAULT_LLM_MODEL
+        return value
+
+    @field_validator("llm_base_url", mode="before")
+    @classmethod
+    def _validate_llm_base_url(cls, value: object) -> object:
+        """Optional absolute HTTPS URL; normalize away trailing slashes."""
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.rstrip("/")
+        parsed = urlparse(normalized)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError(
+                "LLM_BASE_URL must be an absolute HTTPS URL "
+                f"(got scheme {parsed.scheme or 'none'!r})"
+            )
+        return normalized
+
+    @field_validator("llm_timeout_seconds")
+    @classmethod
+    def _validate_llm_timeout_seconds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be a positive number")
+        return value
+
+    @field_validator("llm_max_retries")
+    @classmethod
+    def _validate_llm_max_retries(cls, value: int) -> int:
+        if not 0 <= value <= LLM_MAX_RETRIES_UPPER_BOUND:
+            raise ValueError(
+                "LLM_MAX_RETRIES must be between 0 and "
+                f"{LLM_MAX_RETRIES_UPPER_BOUND} (got {value})"
+            )
         return value
 
     @field_validator("razorpay_base_url")
@@ -192,6 +255,11 @@ class Settings(BaseSettings):
     def razorpay_configured(self) -> bool:
         """Whether both Razorpay credentials are present (never their values)."""
         return self.razorpay_key_id is not None and self.razorpay_key_secret is not None
+
+    @property
+    def llm_configured(self) -> bool:
+        """Whether an LLM API key is present (never its value)."""
+        return self.llm_api_key is not None
 
     @property
     def database_url_supported(self) -> bool:

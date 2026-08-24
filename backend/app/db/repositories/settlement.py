@@ -17,8 +17,8 @@ from .base import (
     paginate,
     upsert_instance,
     upsert_instance_detailed,
-    CountSumAggregate,
     DetailedUpsertResult,
+    SettlementAggregate,
     UpsertOutcome,
     UpsertResult,
 )
@@ -192,8 +192,12 @@ class SettlementRepository:
         end: datetime | None = None,
         currency: str | None = None,
         status: str | None = None,
-    ) -> dict[str | None, CountSumAggregate]:
-        """Settlement amount aggregates per currency (exact minor units)."""
+    ) -> dict[str | None, SettlementAggregate]:
+        """Settlement aggregates per currency (exact minor units).
+
+        ``amount``/``fees``/``tax`` are direct Settlement-entity fields
+        (specification §5.2) — aggregated, never derived or predicted.
+        """
         filters = self._finance_filters(
             start=start, end=end, currency=currency, status=status
         )
@@ -202,11 +206,18 @@ class SettlementRepository:
                 Settlement.currency,
                 func.count(),
                 func.coalesce(func.sum(Settlement.amount_minor), 0),
+                func.coalesce(func.sum(Settlement.fees_minor), 0),
+                func.coalesce(func.sum(Settlement.tax_minor), 0),
             )
             .where(*filters)
             .group_by(Settlement.currency)
         ).all()
         return {
-            row_currency: CountSumAggregate(count=int(row_count), amount_minor=int(total))
-            for row_currency, row_count, total in rows
+            row_currency: SettlementAggregate(
+                count=int(row_count),
+                amount_minor=int(total),
+                fees_minor_sum=int(fees_sum),
+                tax_minor_sum=int(tax_sum),
+            )
+            for row_currency, row_count, total, fees_sum, tax_sum in rows
         }

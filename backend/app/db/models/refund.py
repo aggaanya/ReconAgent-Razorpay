@@ -30,6 +30,14 @@ from ..base import Base
 from ._timestamps import TimestampMixin
 from .payment import RAZORPAY_ID_LENGTH, NotesJSON
 
+# Documented Refund.status values (spec §1.3/§4.1). Only "processed" money
+# actually moved, so only processed refunds count toward realized Refund
+# Amount / Refund Count; "pending" is a future outflow and "failed" moved
+# nothing — both excluded from realized metrics.
+REFUND_STATUS_PENDING = "pending"
+REFUND_STATUS_PROCESSED = "processed"
+REFUND_STATUS_FAILED = "failed"
+
 
 class Refund(TimestampMixin, Base):
     """One Razorpay refund, persisted verbatim from the normalized schema."""

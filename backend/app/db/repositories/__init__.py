@@ -4,6 +4,7 @@ from .base import (
     CountSumAggregate,
     DetailedUpsertResult,
     PaymentAggregate,
+    SettlementAggregate,
     UpsertOutcome,
     UpsertResult,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "PaymentRepository",
     "RefundRepository",
     "RepositoryError",
+    "SettlementAggregate",
     "SettlementRepository",
     "SyncRunRepository",
     "UpsertOutcome",
