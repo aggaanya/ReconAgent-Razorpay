@@ -92,6 +92,7 @@ from app.schemas.reconciliation import (
     ReconciliationSummary,
     ReconciliationEvaluationReport,
 )
+from app.services.reconciliation_policy import annotate_triage
 from app.services.reconciliation_synthetic import (
     DEFAULT_SEED,
     DEFAULT_SIZE,
@@ -623,11 +624,13 @@ def build_report(
 ) -> ReconciliationReport:
     """One-shot run: reconcile, time it, summarize, split exceptions."""
     started = time.perf_counter()
-    results = reconcile(
-        payments,
-        settlements,
-        refunds,
-        max_settlement_delay_days=max_settlement_delay_days,
+    results = annotate_triage(
+        reconcile(
+            payments,
+            settlements,
+            refunds,
+            max_settlement_delay_days=max_settlement_delay_days,
+        )
     )
     elapsed = time.perf_counter() - started
     return ReconciliationReport(

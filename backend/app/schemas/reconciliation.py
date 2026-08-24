@@ -23,6 +23,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.signals import Severity
+
 #: Dataset sources accepted by reconcile entry points (Track 04 batch).
 ReconcileSourceName = Literal["synthetic"]
 
@@ -231,6 +233,33 @@ class ReconciliationResult(BaseModel):
     )
     refunded_total_minor: int | None = Field(
         default=None, description="Sum of processed refunds debited"
+    )
+    #: Deterministic triage annotations — pure policy output from
+    #: app.services.reconciliation_policy (never LLM, never DB).
+    severity: Severity | None = Field(
+        default=None,
+        description=(
+            "Deterministic triage severity on the shared signal "
+            "taxonomy (INFO/LOW/MEDIUM/HIGH/CRITICAL); None when the "
+            "result was produced without triage annotation"
+        ),
+    )
+    priority: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Documented bounded triage rank (CRITICAL=100, HIGH=80, "
+            "MEDIUM=60, LOW=30, INFO=10); deterministic policy, not a "
+            "learned risk score"
+        ),
+    )
+    recommended_action: str | None = Field(
+        default=None,
+        description=(
+            "Deterministic operator guidance for exceptions; None for "
+            "MATCHED (nothing to investigate)"
+        ),
     )
 
     @property

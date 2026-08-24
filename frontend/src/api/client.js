@@ -1,9 +1,9 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
-async function request(path, options = {}) {
+async function request(path, options = {}, { timeoutMs = 10000 } = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(timeoutMs),
     ...options,
   })
 
@@ -44,6 +44,12 @@ export async function getHealth() {
  * @property {string|null} currency
  * @property {string} reason
  * @property {string} exception_type
+ * @property {"INFO"|"LOW"|"MEDIUM"|"HIGH"|"CRITICAL"} [severity] -
+ *   deterministic triage severity from the backend policy layer
+ * @property {number} [priority] - documented bounded triage rank
+ *   (CRITICAL=100 … INFO=10); deterministic, not a learned score
+ * @property {string} [recommended_action] - deterministic operator
+ *   guidance for exceptions; never present on matched records
  */
 
 /**
@@ -127,6 +133,47 @@ export async function getReconcileEvaluation(params = {}) {
     size: String(params.size ?? 100),
   })
   return request(`/api/v1/ai/reconcile/evaluation?${query.toString()}`)
+}
+
+/**
+ * @typedef {Object} AiChatResponse
+ * @property {string} question - echoed verbatim (trimmed)
+ * @property {"completed"|"partial"|"failed"} status
+ *   completed: data retrieved and interpreted; partial: data retrieved but
+ *   some tools or the interpretation failed; failed: nothing retrieved.
+ * @property {string|null} answer - LLM narrative over the retrieved facts;
+ *   facts in tool_results/financial_signals are authoritative.
+ * @property {string[]} selected_tools
+ * @property {string} selection_source
+ * @property {Record<string, Object>} tool_results - verbatim Finance Tool
+ *   envelopes: deterministic facts only
+ * @property {Record<string, string>} tool_errors
+ * @property {Object[]} financial_signals - deterministic Signal Analysis
+ *   Engine findings
+ * @property {string[]} errors
+ */
+
+/**
+ * Asks the finance intelligence agent one natural-language question via
+ * the existing LangGraph chat endpoint. Needs a configured LLM key on the
+ * backend; without one the server responds 503 and this rejects with an
+ * Error whose message names the status.
+ *
+ * @param {string} question - non-empty, max 1000 characters (server-enforced)
+ * @returns {Promise<AiChatResponse>}
+ */
+export async function postAiChat(question) {
+  return request(
+    '/api/v1/ai/chat',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    },
+    // LangGraph planning + tool runs + LLM interpretation can exceed the
+    // default timeout; keep a generous ceiling instead of guessing speed.
+    { timeoutMs: 60000 },
+  )
 }
 
 export function getApiBaseUrl() {

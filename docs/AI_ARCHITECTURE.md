@@ -70,6 +70,13 @@ Its outputs (`PaymentPerformanceResponse`, `RevenueMetricsResponse`,
 layer consumes. The engine is unchanged by Phase 1; its full test suite
 (378 passed, 4 skipped at baseline) is the regression gate.
 
+The same boundary holds for exception **triage**: severity, priority and
+recommended actions on every reconciliation result are deterministic
+policy decisions computed by `backend/app/services/reconciliation_policy.py`
+before the model runs (see Reconciliation Architecture §5.1). The LLM may
+describe these annotations conversationally, but it never assigns,
+overrides or computes them.
+
 ## 3. LLM responsibility
 
 Implemented in `backend/app/ai/llm.py` (`LLMService`). It receives

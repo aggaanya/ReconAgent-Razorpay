@@ -177,10 +177,11 @@ The page shows **Backend Status: Connected / Unavailable**, driven by a real req
 ### Demo flow (no credentials required)
 
 1. Open http://localhost:5173 — the **Batch Reconciliation** tab is the default and loads the **Synthetic Demo Dataset** (seeded 100-record batch) automatically.
-2. Engine-computed facts render immediately: summary cards, match breakdown, typed exception table.
+2. Engine-computed facts render immediately: summary cards, match breakdown, and the typed exception table — every exception row now carries a **deterministic severity** (CRITICAL/HIGH/MEDIUM/LOW), a **priority rank** (100/80/60/30/10, sorted descending by default with a severity filter), and a **recommended action**, all computed by the backend's triage policy (`app/services/reconciliation_policy.py`), never by an LLM.
 3. Flip **AI explanation** to request an LLM narrative (needs `LLM_API_KEY`; the deterministic report is unaffected without it).
 4. The **Reconciliation Evaluation** card shows measured quality for the same batch — accuracy, precision/recall/F1, FP/FN, throughput — from the evaluation-only surface `GET /api/v1/ai/reconcile/evaluation` (isolated ground truth; the serving API never sees it).
-5. **System Status** tab shows backend connectivity. Razorpay API integration stays optional — its endpoints answer with a sanitized `not_configured` response until keys are set.
+5. The **AI Assistant** tab asks natural-language questions through the existing LangGraph endpoint `POST /api/v1/ai/chat`: the agent plans Finance Tools, runs them deterministically, derives signals, and only then narrates. Without an LLM key it answers 503 and the UI explains what is missing.
+6. **System Status** tab shows backend connectivity. Razorpay API integration stays optional — its endpoints answer with a sanitized `not_configured` response until keys are set.
 
 ---
 
@@ -203,7 +204,7 @@ Backend (pytest) — from `backend/` with the venv active:
 .\.venv\Scripts\python.exe -m pytest -q        # or simply: pytest
 ```
 
-Covers: application startup/lifespan, `/health` and `/readiness` contracts, settings loading, CORS, Razorpay client/sync/repositories, finance metrics and APIs, the deterministic reconciliation engine (rules R0–R9, refund integrity, expected settlement, compound exceptions), the synthetic dataset/ground-truth alignment, the LangGraph workflow safety properties, and the AI endpoints — currently **735+ passing tests** (count subject to the latest run).
+Covers: application startup/lifespan, `/health` and `/readiness` contracts, settings loading, CORS, Razorpay client/sync/repositories, finance metrics and APIs, the deterministic reconciliation engine (rules R0–R9, refund integrity, expected settlement, compound exceptions), the deterministic triage policy (severity/priority/recommended actions per exception type), the synthetic dataset/ground-truth alignment, the LangGraph workflow safety properties, and the AI endpoints — currently **753 passing tests** (count subject to the latest run).
 
 Machine-readable evaluation: `backend/.venv/Scripts/python.exe scripts/reconcile_benchmark.py --json` prints the same payload as `GET /api/v1/ai/reconcile/evaluation` — accuracy/precision/recall/F1, TP/FP/FN, throughput and exception distribution measured against isolated ground truth (evaluation-only; serving responses keep `accuracy=null`).
 

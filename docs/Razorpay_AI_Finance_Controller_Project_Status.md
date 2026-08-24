@@ -89,11 +89,11 @@ Batch Reconciliation           ✅
 Benchmark Evaluation           ✅
 AI Dashboard                   ✅
 
-Recommendations                ⏳  (narrative insights only; prescriptive recommendations not yet generated)
+Recommendations                ✅  (deterministic triage: every exception carries severity, priority and a recommended action)
 ```
 
 ## One-Sentence Summary
 
-**The project has completed the financial data foundation (Razorpay integration, synchronization, persistence, metrics, REST APIs) and the intelligence layer on top of it: read-only finance tools, a LangGraph workflow, deterministic signal analysis, a Track 04 batch reconciliation engine with a seeded 100-record benchmark measuring 100% accuracy against ground truth, an AI reconciliation endpoint, and a React reconciliation dashboard — with the AI strictly explanation-only (it describes engine-computed facts and never calculates financial truth). The demo runs end-to-end on the synthetic dataset without any Razorpay credentials; the Razorpay integration remains fully available when keys are configured. Remaining work is operational: authentication, production deployment, live Razorpay verification, human-approval workflows, third-source ingestion, and a frontend test framework.**
+**The project has completed the financial data foundation (Razorpay integration, synchronization, persistence, metrics, REST APIs) and the intelligence layer on top of it: read-only finance tools, a LangGraph workflow, deterministic signal analysis, a Track 04 batch reconciliation engine with a seeded 100-record benchmark measuring 100% accuracy against ground truth, an AI reconciliation endpoint, deterministic exception triage (severity/priority/recommended action per row), and a React dashboard with an evaluation card and a conversational AI assistant — with the AI strictly explanation-only (it describes engine-computed facts and never calculates financial truth). The demo runs end-to-end on the synthetic dataset without any Razorpay credentials; the Razorpay integration remains fully available when keys are configured. Remaining work is operational: authentication, production deployment, live Razorpay verification, human-approval workflows, third-source ingestion, and a frontend test framework.**
 
-> **Note:** The backend suite currently stands at 728+ passing tests (subject to the latest run); the "left" items above are genuine gaps in this repository, not stale claims.
+> **Note:** The backend suite currently stands at 753 passing tests (subject to the latest run); the "left" items above are genuine gaps in this repository, not stale claims.

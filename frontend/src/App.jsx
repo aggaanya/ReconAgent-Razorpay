@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import AssistantPage from './pages/AssistantPage.jsx'
 import ReconciliationPage from './pages/ReconciliationPage.jsx'
 import SystemStatusPage from './pages/SystemStatusPage.jsx'
 
 const TABS = [
   { id: 'reconciliation', label: 'Reconciliation' },
+  { id: 'assistant', label: 'AI Assistant' },
   { id: 'system', label: 'System Status' },
 ]
 
@@ -39,6 +41,8 @@ export default function App() {
       </nav>
       {tab === 'reconciliation' ? (
         <ReconciliationPage />
+      ) : tab === 'assistant' ? (
+        <AssistantPage />
       ) : (
         <SystemStatusPage />
       )}

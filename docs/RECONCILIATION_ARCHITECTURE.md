@@ -174,6 +174,36 @@ only when they do not explain the observed amount; duplicate →
 orphan bank credit → `MISSING_PAYMENT`; refund anomalies →
 `REFUND_MISMATCH`; late settlement → `SETTLEMENT_DELAY`.
 
+### 5.1 Deterministic triage — severity, priority, recommended actions
+
+Every result is annotated by `app/services/reconciliation_policy.py`
+before it leaves the engine. The policy is **pure and deterministic**:
+no LLM, no database, no provider access, no arithmetic on money — the
+amounts were already settled by the rules above; this layer only ranks
+and routes them for a finance operator.
+
+- **Severity** reuses the single shared taxonomy
+  (`app.schemas.signals.Severity`: INFO/LOW/MEDIUM/HIGH/CRITICAL — the
+  same vocabulary the Signal Analysis Engine uses; no second enum).
+- **Priority** is a documented bounded triage rank (not a learned risk
+  score): CRITICAL=100, HIGH=80, MEDIUM=60, LOW=30, INFO=10.
+- **Recommended action** gives operator guidance per exception type;
+  `MATCHED` carries none (nothing to investigate).
+
+| Status | Severity | Rationale |
+|---|---|---|
+| `DUPLICATE_SETTLEMENT` | CRITICAL | possible double payout — money-integrity violation |
+| `REFUND_MISMATCH` | CRITICAL | processed refunds violate integrity vs the payment |
+| `MISSING_SETTLEMENT`, `MISSING_PAYMENT`, `CURRENCY_MISMATCH`, `AMOUNT_MISMATCH`, `UNEXPLAINED_SETTLEMENT_DIFFERENCE` | HIGH | money is provably wrong or unattributable |
+| `UNRESOLVED` | HIGH | the engine refuses to guess; human review required |
+| `INVALID_STATUS` | MEDIUM | inconsistent state, but no wrong money movement proven |
+| `SETTLEMENT_DELAY` | LOW | timing-only finding; amount is exact |
+| `MATCHED` | INFO | healthy; ranked for completeness |
+
+The LLM may *describe* these annotations in narratives, but severity,
+priority and actions are computed before the model runs and are never
+model output.
+
 ## 6. Ground-truth methodology
 
 Ground truth exists **only** inside the evaluation harness
