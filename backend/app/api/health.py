@@ -29,7 +29,6 @@ class ConfigStatus(BaseModel):
     database_configured: bool
     auth_configured: bool
     llm_configured: bool
-    razorpay_configured: bool
 
 
 class ReadinessResponse(BaseModel):
@@ -79,7 +78,6 @@ def read_readiness(settings: Settings = Depends(get_settings)) -> ReadinessRespo
             database_configured=settings.database_url is not None,
             auth_configured=settings.jwt_secret is not None,
             llm_configured=settings.llm_api_key is not None,
-            razorpay_configured=settings.razorpay_configured,
         ),
         database=database_status,
         issues=issues,

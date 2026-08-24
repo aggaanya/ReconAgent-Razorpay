@@ -164,7 +164,8 @@ response — it is an outcome of the run, not an HTTP failure.
 The LLM can only (a) propose tool names — filtered to the registry — and
 (b) phrase text about returned JSON. It cannot execute SQL, reach
 repositories or sessions, read environment variables, invoke arbitrary
-Python, or touch Razorpay APIs: those capabilities simply do not exist in
+Python, or touch external payment-provider APIs: those capabilities simply
+do not exist in
 the graph modules (asserted by source-scan tests) and the session flows
 through config that only nodes read. Logging records lifecycle events,
 selected tool names, durations, and status codes — never secrets or raw

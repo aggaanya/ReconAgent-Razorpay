@@ -83,6 +83,7 @@ from app.schemas.reconciliation import (
     EvaluationDataset,
     GroundTruthEntry,
     GroundTruthEvaluation,
+    ExceptionSummary,
     ReconciliationPayment,
     ReconciliationRefund,
     ReconciliationReport,
@@ -92,6 +93,7 @@ from app.schemas.reconciliation import (
     ReconciliationSummary,
     ReconciliationEvaluationReport,
 )
+from app.services.reconciliation_evidence import attach_evidence
 from app.services.reconciliation_policy import annotate_triage
 from app.services.reconciliation_synthetic import (
     DEFAULT_SEED,
@@ -615,6 +617,67 @@ def summarize(
     )
 
 
+def build_exception_summary(
+    results: list[ReconciliationResult],
+) -> ExceptionSummary:
+    """Deterministic aggregate metrics for exceptions (exposure, priorities, top items)."""
+    exceptions = [r for r in results if r.is_exception]
+    total_exceptions = len(exceptions)
+    total_exposure = sum(r.financial_impact_minor or 0 for r in exceptions)
+
+    crit_cnt = sum(1 for r in exceptions if r.severity == "CRITICAL")
+    high_cnt = sum(1 for r in exceptions if r.severity == "HIGH")
+    med_cnt = sum(1 for r in exceptions if r.severity == "MEDIUM")
+    low_cnt = sum(1 for r in exceptions if r.severity == "LOW")
+
+    crit_exp = sum(r.financial_impact_minor or 0 for r in exceptions if r.severity == "CRITICAL")
+    high_exp = sum(r.financial_impact_minor or 0 for r in exceptions if r.severity == "HIGH")
+    med_exp = sum(r.financial_impact_minor or 0 for r in exceptions if r.severity == "MEDIUM")
+    low_exp = sum(r.financial_impact_minor or 0 for r in exceptions if r.severity == "LOW")
+
+    cat_map: dict[str, dict] = {}
+    for r in exceptions:
+        cat = r.status.value
+        exp = r.financial_impact_minor or 0
+        if cat not in cat_map:
+            cat_map[cat] = {"category": cat, "count": 0, "exposure_minor": 0}
+        cat_map[cat]["count"] += 1
+        cat_map[cat]["exposure_minor"] += exp
+
+    top_categories = sorted(cat_map.values(), key=lambda c: (c["exposure_minor"], c["count"]), reverse=True)
+
+    sorted_by_impact = sorted(exceptions, key=lambda r: (r.financial_impact_minor or 0, r.priority or 0), reverse=True)
+    top_impact = [
+        {
+            "source_transaction_id": r.source_transaction_id,
+            "exception_type": r.status.value,
+            "financial_impact_minor": r.financial_impact_minor or 0,
+            "severity": r.severity,
+            "priority": r.priority,
+        }
+        for r in sorted_by_impact[:5]
+    ]
+
+    unresolved_exp = max([r.financial_impact_minor or 0 for r in exceptions if r.status is ReconciliationStatus.UNRESOLVED], default=0)
+
+    return ExceptionSummary(
+        total_exceptions=total_exceptions,
+        total_financial_exposure_minor=total_exposure,
+        exposure_currency="INR",
+        critical_count=crit_cnt,
+        high_count=high_cnt,
+        medium_count=med_cnt,
+        low_count=low_cnt,
+        critical_exposure_minor=crit_exp,
+        high_exposure_minor=high_exp,
+        medium_exposure_minor=med_exp,
+        low_exposure_minor=low_exp,
+        top_exception_categories=top_categories,
+        top_impact_exceptions=top_impact,
+        largest_unresolved_exposure_minor=unresolved_exp,
+    )
+
+
 def build_report(
     payments: list[ReconciliationPayment],
     settlements: list[ReconciliationSettlementLine],
@@ -622,7 +685,13 @@ def build_report(
     *,
     max_settlement_delay_days: int | None = None,
 ) -> ReconciliationReport:
-    """One-shot run: reconcile, time it, summarize, split exceptions."""
+    """One-shot run: reconcile, time it, summarize, split exceptions.
+
+    Decisions, ordering and arithmetic come solely from
+    :func:`reconcile`; the triage and evidence passes afterwards are pure
+    additive annotations (copies via ``model_copy``, never mutation) that
+    rank for operators and attach the structured audit view respectively.
+    """
     started = time.perf_counter()
     results = annotate_triage(
         reconcile(
@@ -632,9 +701,11 @@ def build_report(
             max_settlement_delay_days=max_settlement_delay_days,
         )
     )
+    results = attach_evidence(results, payments, settlements, refunds)
     elapsed = time.perf_counter() - started
     return ReconciliationReport(
         summary=summarize(results, processing_seconds=elapsed),
+        exception_summary=build_exception_summary(results),
         results=results,
         exceptions=[r for r in results if r.is_exception],
     )

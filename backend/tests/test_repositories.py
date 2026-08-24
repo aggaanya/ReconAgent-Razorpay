@@ -11,7 +11,7 @@ from decimal import Decimal  # noqa: F401
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.db.models import Order, Payment, Refund, Settlement, SyncRun, SyncStatus
+from app.db.models import Order, Payment, Refund, Settlement
 from app.db.repositories import (
     CountSumAggregate,
     DuplicateRecordError,
@@ -21,7 +21,6 @@ from app.db.repositories import (
     RefundRepository,
     SettlementAggregate,
     SettlementRepository,
-    SyncRunRepository,
     UpsertResult,
 )
 
@@ -205,76 +204,6 @@ class TestSettlementRepository:
         settlements.upsert_many([make_settlement(i) for i in range(5)])
         items, total = settlements.list_paginated(limit=2, offset=4)
         assert total == 5 and len(items) == 1
-
-
-class TestSyncRunRepository:
-    def test_lifecycle_running_to_success(self, session_factory):
-        session = session_factory()
-        runs = SyncRunRepository(session)
-        run = runs.create(triggered_by="test")
-        assert run.status == SyncStatus.RUNNING.value
-        assert run.completed_at is None
-        session.commit()
-
-        run.payments_fetched = 3
-        run.payments_inserted = 2
-        run.payments_updated = 1
-        run.payments_watermark_epoch = 1768000000
-        runs.mark_success(run)
-        session.commit()
-
-        reloaded = SyncRunRepository(session).get(run.id)
-        assert reloaded.status == "success"
-        assert reloaded.completed_at is not None
-        assert reloaded.payments_watermark_epoch == 1768000000
-
-    def test_failure_states_record_sanitized_error(self, session_factory):
-        session = session_factory()
-        runs = SyncRunRepository(session)
-        run = runs.create()
-        runs.mark_partial_failure(run, "Razorpay API error (HTTP 500)")
-        session.commit()
-        reloaded = SyncRunRepository(session).get(run.id)
-        assert reloaded.status == "partial_failure"
-        assert reloaded.error == "Razorpay API error (HTTP 500)"
-
-    def test_latest_watermark_reads_only_successful_runs(self, session_factory):
-        session = session_factory()
-        runs = SyncRunRepository(session)
-        assert runs.latest_watermark("payments_watermark_epoch") is None
-
-        failed = runs.create()
-        failed.payments_watermark_epoch = 111
-        runs.mark_failed(failed, "boom")
-        partial = runs.create()
-        partial.settlements_watermark_epoch = 222
-        runs.mark_partial_failure(partial, "settlements failed")
-        ok = runs.create()
-        ok.payments_watermark_epoch = 333
-        ok.settlements_watermark_epoch = 444
-        runs.mark_success(ok)
-        session.commit()
-
-        assert runs.latest_watermark("payments_watermark_epoch") == 333
-        assert runs.latest_watermark("settlements_watermark_epoch") == 444
-
-    def test_invalid_status_rejected_by_check_constraint(self, session_factory):
-        session = session_factory()
-        session.add(SyncRun(status="bogus"))
-        with pytest.raises(IntegrityError):
-            session.commit()
-
-    def test_list_most_recent_first(self, session_factory):
-        session = session_factory()
-        runs = SyncRunRepository(session)
-        first = runs.create()
-        runs.mark_success(first)
-        second = runs.create()
-        runs.mark_success(second)
-        session.commit()
-        items, total = runs.list_paginated(limit=10, offset=0)
-        assert total == 2
-        assert [r.id for r in items] == sorted((first.id, second.id), reverse=True)
 
 
 class TestMoneyPrecisionContract:

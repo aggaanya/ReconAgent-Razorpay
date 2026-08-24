@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
-from app.db.models import Payment, Settlement, SyncRun
+from app.db.models import Payment, Settlement
 
 
 def columns_of(model):
@@ -101,43 +101,9 @@ class TestSettlementsTable:
         }
 
 
-class TestSyncRunsTable:
-    def test_table_name(self):
-        assert SyncRun.__tablename__ == "sync_runs"
-
-    def test_status_column_with_check_constraint(self):
-        column = columns_of(SyncRun)["status"]
-        assert isinstance(column.type, String)
-        checks = [
-            c
-            for c in SyncRun.__table__.constraints
-            if c.__class__.__name__ == "CheckConstraint"
-        ]
-        assert any("ck_sync_runs_status" == getattr(c, "name", None) for c in checks)
-
-    def test_counter_columns(self):
-        for name in (
-            "payments_fetched",
-            "payments_inserted",
-            "payments_updated",
-            "settlements_fetched",
-            "settlements_inserted",
-            "settlements_updated",
-        ):
-            assert isinstance(columns_of(SyncRun)[name].type, Integer)
-
-    def test_watermark_columns_are_bigint_epochs(self):
-        for name in ("payments_watermark_epoch", "settlements_watermark_epoch"):
-            assert isinstance(columns_of(SyncRun)[name].type, BigInteger)
-
-    def test_started_at_indexed(self):
-        index_names = {index.name for index in SyncRun.__table__.indexes}
-        assert index_names == {"ix_sync_runs_started_at"}
-
-
 class TestTimestampMixin:
     def test_created_and_updated_present_on_all_models(self):
-        for model in (Payment, Settlement, SyncRun):
+        for model in (Payment, Settlement):
             columns = columns_of(model)
             assert {"created_at", "updated_at"} <= set(columns.keys())
 

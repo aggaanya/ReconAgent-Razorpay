@@ -54,7 +54,7 @@ def set_database_url(monkeypatch):
 
     def _set(url: str | None) -> None:
         if url is None:
-            monkeypatch.delenv("DATABASE_URL", raising=False)
+            monkeypatch.setenv("DATABASE_URL", "")
         else:
             monkeypatch.setenv("DATABASE_URL", url)
         from app.core.config import get_settings

@@ -24,7 +24,6 @@ class TestReadinessDefaults:
             "database_configured": False,
             "auth_configured": False,
             "llm_configured": False,
-            "razorpay_configured": False,
         }
 
     def test_readiness_never_leaks_secret_values(self, client, monkeypatch) -> None:

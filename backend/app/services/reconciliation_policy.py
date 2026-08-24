@@ -121,9 +121,86 @@ def severity_for(status: ReconciliationStatus) -> Severity:
     return SEVERITY_BY_EXCEPTION[status]
 
 
-def priority_for(status: ReconciliationStatus) -> int:
-    """Deterministic bounded triage priority for any terminal status."""
-    return PRIORITY_BY_SEVERITY[severity_for(status)]
+#: Documented impact-aware priority constants.
+IMPACT_BOOST_UNIT_MINOR = 10_000  # ₹100 in minor units per priority point
+MAX_INTRA_BAND_BOOST = 15  # Cap intra-band boost so HIGH (80..95) never touches CRITICAL (100)
+
+
+def priority_for(
+    status: ReconciliationStatus,
+    financial_impact_minor: int | None = None,
+) -> int:
+    """Deterministic bounded triage priority for any terminal status.
+
+    Base rank comes from severity (CRITICAL=100, HIGH=80, MEDIUM=60, LOW=30, INFO=10).
+    An intra-band boost (+1 per ₹100 of exposure, max +15) ranks higher-impact exceptions
+    first within the same severity band while preserving strict band order.
+    """
+    base = PRIORITY_BY_SEVERITY[severity_for(status)]
+    if status is ReconciliationStatus.MATCHED or financial_impact_minor is None or financial_impact_minor <= 0:
+        return base
+    if base >= 100:
+        return 100
+    boost = min(int(financial_impact_minor // IMPACT_BOOST_UNIT_MINOR), MAX_INTRA_BAND_BOOST)
+    return min(base + boost, 99)
+
+
+def compute_financial_impact(
+    result: ReconciliationResult,
+) -> tuple[int | None, str | None]:
+    """Deterministic financial impact and explanation for an exception.
+
+    Uses existing engine fields (expected, actual, difference, gross) to calculate
+    financial exposure without double counting or inventing values.
+    Returns (financial_impact_minor, financial_impact_reason).
+    """
+    if result.status is ReconciliationStatus.MATCHED:
+        return None, None
+
+    if result.status in (
+        ReconciliationStatus.AMOUNT_MISMATCH,
+        ReconciliationStatus.UNEXPLAINED_SETTLEMENT_DIFFERENCE,
+    ):
+        diff = abs(result.difference_minor) if result.difference_minor is not None else (result.expected_amount_minor or 0)
+        reason = (
+            f"Residual unexplained settlement difference of {diff} minor units"
+            if result.status is ReconciliationStatus.UNEXPLAINED_SETTLEMENT_DIFFERENCE
+            else f"Gross amount mismatch of {diff} minor units"
+        )
+        return diff, reason
+
+    if result.status is ReconciliationStatus.MISSING_SETTLEMENT:
+        exp = result.expected_amount_minor if result.expected_amount_minor is not None else (result.gross_amount_minor or 0)
+        return exp, f"Expected settlement exposure of {exp} minor units uncollected"
+
+    if result.status is ReconciliationStatus.MISSING_PAYMENT:
+        act = result.actual_amount_minor if result.actual_amount_minor is not None else 0
+        return act, f"Unattributable settlement payout of {act} minor units"
+
+    if result.status is ReconciliationStatus.DUPLICATE_SETTLEMENT:
+        act = result.actual_amount_minor if result.actual_amount_minor is not None else (result.expected_amount_minor or 0)
+        return act, f"Duplicate settlement payout exposure of {act} minor units"
+
+    if result.status is ReconciliationStatus.CURRENCY_MISMATCH:
+        exp = result.expected_amount_minor if result.expected_amount_minor is not None else (result.actual_amount_minor or 0)
+        return exp, f"Cross-currency transaction exposure of {exp} minor units"
+
+    if result.status is ReconciliationStatus.REFUND_MISMATCH:
+        exp = result.expected_amount_minor if result.expected_amount_minor is not None else (result.gross_amount_minor or 0)
+        return exp, f"Refund integrity discrepancy exposure of {exp} minor units"
+
+    if result.status is ReconciliationStatus.INVALID_STATUS:
+        val = result.actual_amount_minor if result.actual_amount_minor is not None else (result.expected_amount_minor or 0)
+        return val, f"Ineligible status settlement exposure of {val} minor units"
+
+    if result.status is ReconciliationStatus.SETTLEMENT_DELAY:
+        return 0, "Settlement delay only; 0 financial exposure"
+
+    if result.status is ReconciliationStatus.UNRESOLVED:
+        val = result.actual_amount_minor if result.actual_amount_minor is not None else (result.expected_amount_minor or 0)
+        return val, f"Unresolved exception exposure of {val} minor units"
+
+    return None, None
 
 
 def recommended_action_for(status: ReconciliationStatus) -> str | None:
@@ -136,21 +213,25 @@ def recommended_action_for(status: ReconciliationStatus) -> str | None:
 def annotate_triage(
     results: list[ReconciliationResult],
 ) -> list[ReconciliationResult]:
-    """Return copies of ``results`` annotated with severity/priority/action.
+    """Return copies of ``results`` annotated with severity/priority/action/impact.
 
     Pure annotation of engine output — statuses, amounts, reasons and
     ordering are untouched. Frozen models are copied, never mutated.
     """
     annotated: list[ReconciliationResult] = []
     for result in results:
+        impact_minor, impact_reason = compute_financial_impact(result)
+        severity = severity_for(result.status)
+        priority = priority_for(result.status, impact_minor)
+        action = recommended_action_for(result.status)
         annotated.append(
             result.model_copy(
                 update={
-                    "severity": severity_for(result.status),
-                    "priority": priority_for(result.status),
-                    "recommended_action": recommended_action_for(
-                        result.status
-                    ),
+                    "severity": severity,
+                    "priority": priority,
+                    "recommended_action": action,
+                    "financial_impact_minor": impact_minor,
+                    "financial_impact_reason": impact_reason,
                 }
             )
         )
@@ -159,10 +240,14 @@ def annotate_triage(
 
 __all__ = [
     "ACTION_BY_EXCEPTION",
+    "IMPACT_BOOST_UNIT_MINOR",
+    "MAX_INTRA_BAND_BOOST",
     "PRIORITY_BY_SEVERITY",
     "SEVERITY_BY_EXCEPTION",
     "annotate_triage",
+    "compute_financial_impact",
     "priority_for",
     "recommended_action_for",
     "severity_for",
 ]
+

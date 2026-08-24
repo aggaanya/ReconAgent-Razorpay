@@ -1,4 +1,4 @@
-"""Finance metrics and read models over synced Razorpay records.
+"""Finance metrics and read models over the normalized internal records.
 
 Pure read layer: no fetching, no writes, no provider calls, and **no LLM**
 anywhere — every number below is a deterministic aggregation over stored

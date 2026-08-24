@@ -36,8 +36,9 @@ export default function SystemStatusPage() {
           )}
 
           <p className="mt-3 text-xs text-slate-400">
-            Razorpay API integration is optional &mdash; reconciliation runs on
-            the synthetic demo dataset without any credentials.
+            ReconAgent runs on a normalized internal data model &mdash;
+            reconciliation works on the synthetic demo dataset without any
+            external credentials.
           </p>
         </div>
 

@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react'
+import EvidenceDetail from './EvidenceDetail.jsx'
+import { formatDifference, formatMinor } from './format.js'
 
 const STATUS_PILL = {
   AMOUNT_MISMATCH: 'bg-amber-50 text-amber-700 ring-amber-600/20',
@@ -27,21 +29,6 @@ const SEVERITY_PILL = {
 
 const SEVERITY_RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 }
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
-
-function formatMinor(amount, currency = 'INR') {
-  if (amount === null || amount === undefined) return '—'
-  const formatter = new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: 2,
-  })
-  return formatter.format(amount / 100)
-}
-
-function formatDifference(minor, currency) {
-  if (minor === null || minor === undefined) return '—'
-  return `${minor > 0 ? '+' : ''}${formatMinor(minor, currency)}`
-}
 
 /**
  * The recorded components behind the expected settlement, when present.
@@ -75,24 +62,49 @@ function ComponentCell({ entry }) {
  */
 export default function ExceptionTable({ exceptions }) {
   const [severityFilter, setSeverityFilter] = useState('ALL')
-  const [priorityDescending, setPriorityDescending] = useState(true)
+  const [categoryFilter, setCategoryFilter] = useState('ALL')
+  const [sortField, setSortField] = useState('priority') // 'priority' | 'impact'
+  const [sortDescending, setSortDescending] = useState(true)
+  const [selectedKey, setSelectedKey] = useState(null)
+
+  const rowKey = (e) =>
+    `${e.source_transaction_id}-${e.matched_transaction_id ?? 'none'}`
+
+  const categories = useMemo(() => {
+    const set = new Set()
+    exceptions.forEach((e) => {
+      if (e.exception_type) set.add(e.exception_type)
+    })
+    return Array.from(set).sort()
+  }, [exceptions])
 
   const visibleExceptions = useMemo(() => {
-    const filtered =
-      severityFilter === 'ALL'
-        ? exceptions
-        : exceptions.filter((e) => e.severity === severityFilter)
-    const rank = (e) =>
-      typeof e.priority === 'number'
+    let filtered = exceptions
+    if (severityFilter !== 'ALL') {
+      filtered = filtered.filter((e) => e.severity === severityFilter)
+    }
+    if (categoryFilter !== 'ALL') {
+      filtered = filtered.filter((e) => e.exception_type === categoryFilter)
+    }
+
+    const rank = (e) => {
+      if (sortField === 'impact') {
+        return e.financial_impact_minor ?? 0
+      }
+      return typeof e.priority === 'number'
         ? e.priority
         : SEVERITY_RANK[e.severity] ?? -1
+    }
+
     return [...filtered].sort((a, b) => {
       const delta = rank(b) - rank(a)
-      if (delta !== 0) return priorityDescending ? delta : -delta
-      // Stable tie-break so re-renders never reshuffle equal rows.
+      if (delta !== 0) return sortDescending ? delta : -delta
       return a.source_transaction_id.localeCompare(b.source_transaction_id)
     })
-  }, [exceptions, severityFilter, priorityDescending])
+  }, [exceptions, severityFilter, categoryFilter, sortField, sortDescending])
+
+  const selectedException =
+    visibleExceptions.find((e) => rowKey(e) === selectedKey) ?? null
 
   if (!exceptions.length) {
     return (
@@ -103,130 +115,253 @@ export default function ExceptionTable({ exceptions }) {
   }
 
   return (
-    <div
-      className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm"
-      data-testid="exception-table"
-    >
-      <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2">
-        <label
-          htmlFor="severity-filter"
-          className="text-xs font-medium uppercase tracking-wide text-slate-500"
-        >
-          Severity
-        </label>
-        <select
-          id="severity-filter"
-          value={severityFilter}
-          onChange={(event) => setSeverityFilter(event.target.value)}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 focus:border-slate-500 focus:outline-none"
-          data-testid="severity-filter"
-        >
-          <option value="ALL">All</option>
-          {SEVERITIES.map((severity) => (
-            <option key={severity} value={severity}>
-              {severity}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => setPriorityDescending((current) => !current)}
-          className="ml-auto rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900"
-          data-testid="priority-sort"
-        >
-          Priority {priorityDescending ? '↓' : '↑'}
-        </button>
-      </div>
-      <table className="min-w-full divide-y divide-slate-200 text-sm">
-        <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-          <tr>
-            <th className="px-4 py-3">Transaction</th>
-            <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3">Severity</th>
-            <th className="px-4 py-3 text-right">Priority</th>
-            <th className="px-4 py-3">Components</th>
-            <th className="px-4 py-3 text-right">Expected Amount</th>
-            <th className="px-4 py-3 text-right">Actual Amount</th>
-            <th className="px-4 py-3 text-right">Difference</th>
-            <th className="px-4 py-3">Reason</th>
-            <th className="px-4 py-3">Recommended Action</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {visibleExceptions.map((e) => (
-            <tr key={`${e.source_transaction_id}-${e.matched_transaction_id ?? 'none'}`}>
-              <td className="px-4 py-3">
-                <div className="font-mono text-xs">{e.source_transaction_id}</div>
-                {e.matched_transaction_id &&
-                e.matched_transaction_id !== e.source_transaction_id ? (
-                  <div className="font-mono text-xs text-slate-400">
-                    ↔ {e.matched_transaction_id}
-                  </div>
-                ) : null}
-              </td>
-              <td className="px-4 py-3">
-                <span
-                  className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                    STATUS_PILL[e.status] ?? 'bg-slate-100 text-slate-700 ring-slate-500/20'
-                  }`}
-                >
-                  {e.exception_type}
-                </span>
-                {Array.isArray(e.secondary_issues) && e.secondary_issues.length ? (
-                  <div
-                    className="mt-1 flex flex-wrap gap-1"
-                    data-testid="secondary-issues"
-                  >
-                    {e.secondary_issues.map((issue) => (
-                      <span
-                        key={issue}
-                        className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
-                          STATUS_PILL[issue] ??
-                          'bg-slate-100 text-slate-700 ring-slate-500/20'
-                        }`}
-                      >
-                        + {issue}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </td>
-              <td className="px-4 py-3">
-                <span
-                  className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${
-                    SEVERITY_PILL[e.severity] ?? 'bg-slate-100 text-slate-600 ring-slate-500/20'
-                  }`}
-                  data-testid={`severity-${e.severity ?? 'unknown'}`}
-                >
-                  {e.severity ?? '—'}
-                </span>
-              </td>
-              <td
-                className="px-4 py-3 text-right font-mono tabular-nums text-slate-700"
-                title="Deterministic triage rank (CRITICAL=100 … INFO=10)"
-              >
-                {typeof e.priority === 'number' ? e.priority : '—'}
-              </td>
-              <td className="px-4 py-3">
-                <ComponentCell entry={e} />
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">
-                {formatMinor(e.expected_amount_minor, e.currency)}
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">
-                {formatMinor(e.actual_amount_minor, e.currency)}
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">
-                {formatDifference(e.difference_minor, e.currency)}
-              </td>
-              <td className="max-w-sm px-4 py-3 text-slate-600">{e.reason}</td>
-              <td className="max-w-sm px-4 py-3 text-slate-600" data-testid="recommended-action">
-                {e.recommended_action ?? '—'}
-              </td>
+    <>
+      <div
+        className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm"
+        data-testid="exception-table"
+      >
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="severity-filter"
+              className="font-medium uppercase tracking-wide text-slate-500"
+            >
+              Severity:
+            </label>
+            <select
+              id="severity-filter"
+              value={severityFilter}
+              onChange={(event) => setSeverityFilter(event.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 focus:border-slate-500 focus:outline-none"
+              data-testid="severity-filter"
+            >
+              <option value="ALL">All Severities</option>
+              {SEVERITIES.map((severity) => (
+                <option key={severity} value={severity}>
+                  {severity}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="category-filter"
+              className="font-medium uppercase tracking-wide text-slate-500"
+            >
+              Type:
+            </label>
+            <select
+              id="category-filter"
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 focus:border-slate-500 focus:outline-none"
+              data-testid="category-filter"
+            >
+              <option value="ALL">All Exception Types</option>
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <span className="hidden text-slate-400 sm:inline">
+            Click row to open evidence.
+          </span>
+
+          <div className="ml-auto flex items-center gap-2">
+            <label className="font-medium uppercase tracking-wide text-slate-500">
+              Sort by:
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                if (sortField === 'priority') {
+                  setSortDescending((curr) => !curr)
+                } else {
+                  setSortField('priority')
+                  setSortDescending(true)
+                }
+              }}
+              className={`rounded-md border px-2 py-1 font-medium ${
+                sortField === 'priority'
+                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                  : 'border-slate-200 text-slate-600 hover:border-slate-300'
+              }`}
+              data-testid="priority-sort"
+            >
+              Priority {sortField === 'priority' ? (sortDescending ? '↓' : '↑') : ''}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (sortField === 'impact') {
+                  setSortDescending((curr) => !curr)
+                } else {
+                  setSortField('impact')
+                  setSortDescending(true)
+                }
+              }}
+              className={`rounded-md border px-2 py-1 font-medium ${
+                sortField === 'impact'
+                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                  : 'border-slate-200 text-slate-600 hover:border-slate-300'
+              }`}
+              data-testid="impact-sort"
+            >
+              Impact {sortField === 'impact' ? (sortDescending ? '↓' : '↑') : ''}
+            </button>
+          </div>
+        </div>
+
+        <table className="min-w-full divide-y divide-slate-200 text-sm">
+          <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Transaction</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Severity</th>
+              <th className="px-4 py-3 text-right">Priority</th>
+              <th className="px-4 py-3 text-right">Financial Impact</th>
+              <th className="px-4 py-3">Components</th>
+              <th className="px-4 py-3 text-right">Expected Amount</th>
+              <th className="px-4 py-3 text-right">Actual Amount</th>
+              <th className="px-4 py-3 text-right">Difference</th>
+              <th className="px-4 py-3">Reason</th>
+              <th className="px-4 py-3">Recommended Action</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {visibleExceptions.map((e) => {
+              const key = rowKey(e)
+              const isSelected = key === selectedKey
+              const isHighImpact =
+                e.severity === 'CRITICAL' ||
+                (e.financial_impact_minor && e.financial_impact_minor >= 1000000)
+
+              return (
+                <tr
+                  key={key}
+                  onClick={() =>
+                    setSelectedKey((current) => (current === key ? null : key))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setSelectedKey((current) =>
+                        current === key ? null : key,
+                      )
+                    }
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  aria-selected={isSelected}
+                  aria-expanded={isSelected}
+                  data-testid={`exception-row-${e.source_transaction_id}`}
+                  className={`cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                    isSelected
+                      ? 'bg-indigo-50/70'
+                      : isHighImpact
+                      ? 'bg-red-50/10 hover:bg-slate-50'
+                      : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <td className="px-4 py-3">
+                    <div className="font-mono text-xs font-semibold text-slate-800">
+                      {e.source_transaction_id}
+                    </div>
+                    {e.matched_transaction_id &&
+                    e.matched_transaction_id !== e.source_transaction_id ? (
+                      <div className="font-mono text-xs text-slate-400">
+                        ↔ {e.matched_transaction_id}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${
+                        STATUS_PILL[e.status] ??
+                        'bg-slate-100 text-slate-700 ring-slate-500/20'
+                      }`}
+                    >
+                      {e.exception_type}
+                    </span>
+                    {Array.isArray(e.secondary_issues) &&
+                    e.secondary_issues.length ? (
+                      <div
+                        className="mt-1 flex flex-wrap gap-1"
+                        data-testid="secondary-issues"
+                      >
+                        {e.secondary_issues.map((issue) => (
+                          <span
+                            key={issue}
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
+                              STATUS_PILL[issue] ??
+                              'bg-slate-100 text-slate-700 ring-slate-500/20'
+                            }`}
+                          >
+                            + {issue}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${
+                        SEVERITY_PILL[e.severity] ??
+                        'bg-slate-100 text-slate-600 ring-slate-500/20'
+                      }`}
+                      data-testid={`severity-${e.severity ?? 'unknown'}`}
+                    >
+                      {e.severity ?? '—'}
+                    </span>
+                  </td>
+                  <td
+                    className="px-4 py-3 text-right font-mono font-bold tabular-nums text-slate-800"
+                    title="Deterministic triage priority score (0-100)"
+                  >
+                    {typeof e.priority === 'number' ? e.priority : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono font-bold tabular-nums text-red-600">
+                    {e.financial_impact_minor != null
+                      ? formatMinor(e.financial_impact_minor, e.currency)
+                      : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <ComponentCell entry={e} />
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatMinor(e.expected_amount_minor, e.currency)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatMinor(e.actual_amount_minor, e.currency)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatDifference(e.difference_minor, e.currency)}
+                  </td>
+                  <td className="max-w-sm px-4 py-3 text-slate-600">
+                    {e.reason}
+                  </td>
+                  <td
+                    className="max-w-sm px-4 py-3 text-slate-600"
+                    data-testid="recommended-action"
+                  >
+                    {e.recommended_action ?? '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {selectedException ? (
+        <div className="mt-4" data-testid="evidence-panel-section">
+          <EvidenceDetail exception={selectedException} />
+        </div>
+      ) : null}
+    </>
   )
 }

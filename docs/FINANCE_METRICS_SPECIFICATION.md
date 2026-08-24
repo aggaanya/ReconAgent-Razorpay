@@ -1,8 +1,10 @@
 # Finance Intelligence Engine — Metrics Specification
 
+> **Architecture note:** ReconAgent operates on a normalized internal financial data model. Synthetic data is provided for deterministic demos and evaluation. External payment-provider ingestion is outside the core controller. This document is retained as **historical research provenance**: the `[Razorpay Fact]` citations below record where the original field semantics (status enums, subunit amounts, settlement behavior) were sourced from while designing that normalized model. No live provider API is called anywhere in this repository.
+
 **Document status:** Draft v1.0 — SOURCE OF TRUTH for the deterministic calculation layer
 **Scope:** Definitions, formulas, data sources, assumptions, edge cases. **No implementation code.**
-**Project:** Razorpay AI Finance Controller
+**Project:** Razorpay AI Finance Controller (original working name; see architecture note above)
 
 ---
 

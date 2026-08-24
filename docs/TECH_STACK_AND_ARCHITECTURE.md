@@ -4,6 +4,12 @@
 **Audience:** Developers, technical leads, and AI coding agents working on ReconAgent
 **Scope:** Target architecture and phased implementation plan for an AI-assisted financial reconciliation platform
 
+> **Architecture note:** ReconAgent operates on a normalized internal
+> financial data model. Synthetic data is provided for deterministic demos
+> and evaluation. External payment-provider ingestion is outside the core
+> controller. Sections below that mention a live provider integration are
+> historical design records — no such integration exists in the codebase.
+
 ---
 
 ## Table of Contents
@@ -22,7 +28,7 @@
 12. [AI Architecture](#12-ai-architecture)
 13. [LangGraph Agent Architecture](#13-langgraph-agent-architecture)
 14. [Agent Tools](#14-agent-tools)
-15. [External Integrations (Razorpay)](#15-external-integrations-razorpay)
+15. [External Integrations](#15-external-integrations)
 16. [Authentication Architecture](#16-authentication-architecture)
 17. [Background Processing Architecture](#17-background-processing-architecture)
 18. [Reporting Architecture](#18-reporting-architecture)
@@ -55,7 +61,7 @@
 
 ## 1. Executive Summary
 
-ReconAgent is an AI-assisted financial reconciliation platform. It ingests financial records from multiple sources — payment gateway data (initially Razorpay), bank transaction data, and internal ledger/invoice data — and determines which records match and which do not.
+ReconAgent is an AI-assisted financial reconciliation platform. It operates on financial records from a normalized internal data model (with a synthetic dataset for deterministic demos and evaluation) and determines which records match and which do not. External payment-provider ingestion is outside the core controller.
 
 The defining architectural rule of ReconAgent is the separation between **deterministic computation** and **AI-assisted reasoning**:
 
@@ -137,8 +143,8 @@ This document is the architectural source of truth for ReconAgent. It describes 
 - Redis
 
 ### Data Sources
-- CSV (initial)
-- Razorpay APIs (later)
+- Own database (normalized internal data model)
+- Synthetic dataset (deterministic demos and evaluation)
 
 ### Version Control
 - Git, GitHub
@@ -170,7 +176,6 @@ This document is the architectural source of truth for ReconAgent. It describes 
 | JWT | Stateless authentication token for API requests (planned) |
 | Celery | Executes background/asynchronous jobs (planned) |
 | Redis | Message broker for Celery and general caching (planned) |
-| Razorpay API | Source of live payment/settlement data (planned) |
 
 ---
 
@@ -196,18 +201,18 @@ This document is the architectural source of truth for ReconAgent. It describes 
              |           LLM + Tools
              |            (LangGraph)
              |                 |
-             v                 v
-                    PostgreSQL (single source
-                     of persisted truth)
-                               |
-                   +-----------+-----------+
-                   |                       |
-                   v                       v
-               CSV Data              Razorpay API
-             (current)                (planned)
+              v                 v
+                     PostgreSQL (single source
+                      of persisted truth)
+                                |
+                    +-----------+-----------+
+                    |                       |
+                    v                       v
+          Synthetic dataset           Normalized records
+        (deterministic demos)        (internal data model)
 ```
 
-**Key rule shown in this diagram:** the React frontend only ever talks to FastAPI. FastAPI is the sole gateway to PostgreSQL, the AI layer, and external integrations such as Razorpay.
+**Key rule shown in this diagram:** the React frontend only ever talks to FastAPI. FastAPI is the sole gateway to PostgreSQL and the AI layer. There is no external payment-provider integration.
 
 ---
 
@@ -246,7 +251,7 @@ FastAPI
 
 The frontend **never**:
 - Connects directly to PostgreSQL.
-- Calls the Razorpay API directly.
+- Calls any external payment-provider API directly.
 - Calls the LLM directly.
 
 All of these are mediated by the FastAPI backend.
@@ -268,7 +273,6 @@ backend/
     ├── repositories/          # Data-access layer (queries against models)
     ├── services/               # Business logic (reconciliation, exceptions, reporting)
     ├── agents/                   # LangGraph graph definitions, agent tools
-    ├── integrations/               # External API adapters (Razorpay, etc.)
     └── db/                           # Session management, base classes
 ```
 
@@ -337,7 +341,7 @@ PostgreSQL is chosen because ReconAgent is a financial system that requires: str
 | Table | Purpose |
 |---|---|
 | `users` | Application users (planned once auth exists) |
-| `payments` | Records from the payment gateway (e.g., Razorpay) |
+| `payments` | Normalized payment records in the internal data model |
 | `bank_transactions` | Records from bank statements/feeds |
 | `ledger_entries` | Internal accounting/invoice records |
 | `reconciliation_runs` | Metadata for each reconciliation execution (time, source data, status) |
@@ -559,37 +563,30 @@ The agent does not receive unrestricted database credentials. Every tool is a na
 
 ---
 
-## 15. External Integrations (Razorpay)
+## 15. External Integrations
 
-### Current (CSV-based)
+> **Status: REMOVED / OUT OF SCOPE.** ReconAgent operates on a normalized
+> internal financial data model. Synthetic data is provided for
+> deterministic demos and evaluation. External payment-provider ingestion
+> is outside the core controller — the earlier read-only provider adapter
+> (`integrations/razorpay/`) and its sync endpoints were removed, and no
+> provider credentials exist in configuration.
+
+### Current (and only) data path
 
 ```
-CSV / Synthetic Data
-        ↓
-Reconciliation
-```
-
-### Planned (live integration)
-
-```
-Razorpay API
-        ↓
-Data Adapter
+Own Database / Synthetic Dataset
         ↓
 Normalization
         ↓
 Reconciliation
 ```
 
-### Adapter boundary
-
-A dedicated integration/adapter layer (`integrations/razorpay/`) translates Razorpay-specific API responses into the same normalized internal representation used by CSV-based data. The reconciliation engine and downstream services depend only on this normalized representation — never on Razorpay-specific fields or response shapes directly.
-
 ### Why this matters
 
-- **Testability**: reconciliation logic can be tested against CSV fixtures without needing live Razorpay credentials or network access.
-- **Resilience to API changes**: if Razorpay's API changes, only the adapter needs updating.
-- **Source flexibility**: additional payment gateways could be added later behind the same adapter boundary without touching the reconciliation engine.
+- **Zero-credential demos**: reconciliation logic runs against the seeded synthetic batch without any external credentials or network access.
+- **Determinism**: every number the engine produces is reproducible from the internal data model alone.
+- **Source flexibility**: an additional payment gateway could only ever be added behind a future adapter boundary without touching the reconciliation engine — no such integration exists today.
 
 ---
 
@@ -689,7 +686,7 @@ All metrics are computed by the reporting service directly from PostgreSQL data 
 ## 19. Data Flow
 
 ```
-CSV / Razorpay API
+Synthetic dataset / normalized internal records
         ↓
    Ingestion (Pandas)
         ↓
@@ -785,7 +782,7 @@ The AI never writes a resolution directly — the `approvals` step is the only p
 ## 24. End-to-End System Flow
 
 ```
- 1. Payment data arrives (CSV now, Razorpay API later).
+ 1. Payment data is read from the normalized internal model / synthetic dataset.
  2. Bank transaction data arrives.
  3. Internal ledger record exists.
  4. Data is normalized (Pandas → validated → persisted to PostgreSQL).
@@ -852,8 +849,6 @@ This structure is intentionally minimal at first; directories such as `infra/` a
 | `VITE_API_BASE_URL` | ✅ | | |
 | `LLM_API_KEY` | | ✅ (only once AI phase begins) | ✅ |
 | `JWT_SECRET` | | | ✅ (auth phase) |
-| `RAZORPAY_KEY_ID` | | | ✅ (integration phase) |
-| `RAZORPAY_KEY_SECRET` | | | ✅ (integration phase) |
 
 Example (`.env.example` — placeholders only, never real values):
 
@@ -861,8 +856,6 @@ Example (`.env.example` — placeholders only, never real values):
 DATABASE_URL=postgresql://user:password@localhost:5432/reconagent
 JWT_SECRET=
 LLM_API_KEY=
-RAZORPAY_KEY_ID=
-RAZORPAY_KEY_SECRET=
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
@@ -900,7 +893,7 @@ Real secrets are never committed to the repository or written into documentation
 - SQL injection mitigated structurally through SQLAlchemy's parameterized queries.
 - Audit logging for state-changing actions, especially approvals and resolutions.
 - Least-privilege principle applied to both human roles and the AI agent's tool access.
-- Strict API boundaries: frontend never touches PostgreSQL, Razorpay, or the LLM directly.
+- Strict API boundaries: frontend never touches PostgreSQL, external provider APIs, or the LLM directly.
 - **AI-generated recommendations never directly mutate financial records.** A recommendation only becomes an applied resolution after explicit human approval (see [Section 23](#23-human-approval-flow)).
 
 ---
@@ -923,7 +916,7 @@ Frontend user-friendly message
 - Authentication errors (planned)
 - Authorization errors (planned)
 - Not-found errors
-- Integration failures (e.g., Razorpay API unavailable)
+- Integration failures (e.g., a future external source being unavailable)
 - Database failures
 - AI/LLM failures (timeout, malformed output, tool failure)
 - Background job failures (planned, once Celery is introduced)
@@ -981,7 +974,7 @@ The MVP is intentionally not over-engineered for scale it does not yet need; the
 - Reconciliation runs are idempotent where possible — re-running a run on the same input should not duplicate results.
 - The AI investigation workflow is designed to be resumable (via LangGraph state), so a failure after evidence collection does not require restarting from scratch.
 - Failures in the AI layer do not block or corrupt the deterministic reconciliation results — an exception can exist and be reviewed by a human even if AI investigation fails.
-- Integration failures (e.g., Razorpay API downtime) are isolated to the ingestion step and do not affect previously persisted data.
+- Ingestion failures are isolated to the ingestion step and do not affect previously persisted data.
 
 ---
 
@@ -1001,7 +994,7 @@ The MVP is intentionally not over-engineered for scale it does not yet need; the
 12. **Versioned APIs** — API routes are versioned to allow safe evolution.
 13. **Database migrations** — schema changes are version-controlled via Alembic, never applied ad hoc.
 14. **Failure isolation** — AI or integration failures do not compromise deterministic reconciliation results.
-15. **Extensibility** — adapter boundaries (e.g., for Razorpay) allow new data sources or gateways to be added without rewriting core logic.
+15. **Extensibility** — adapter boundaries allow hypothetical new data sources or gateways to be added without rewriting core logic.
 
 ---
 
@@ -1017,7 +1010,7 @@ The MVP is intentionally not over-engineered for scale it does not yet need; the
 | **Phase 6** | Exception management | Exception records, difference calculation, reason categories, review status |
 | **Phase 7** | AI tools | Evidence tools, LLM integration, structured AI output, confidence, explanation |
 | **Phase 8** | LangGraph | Agent state, nodes, edges, tool calls, investigation workflow |
-| **Later** | Enterprise hardening | Human approval UI, authentication/RBAC, reporting, Razorpay integration, Celery/Redis, deployment, observability |
+| **Later** | Enterprise hardening | Human approval UI, authentication/RBAC, reporting, Celery/Redis, deployment, observability |
 
 Each phase builds strictly on the previous one; no phase requires discarding work from an earlier phase.
 
@@ -1032,14 +1025,14 @@ As of this document, **no application code has been written** — this document 
 - Database: **Not started (Phase 2).**
 - Reconciliation engine: **Not started (Phase 5).**
 - AI/LangGraph: **Not started (Phase 7–8).**
-- Auth, Celery/Redis, Razorpay integration: **Not started (Later phases).**
+- Auth, Celery/Redis: **Not started (Later phases).** External provider integration: **Removed** (outside the core controller).
 
 ---
 
 ## 37. What Will Be Added Later
 
 - JWT authentication and role-based authorization.
-- Live Razorpay API integration via the adapter layer.
+- ~~Live provider API integration~~ � removed from scope; the controller runs on its own database/synthetic dataset.
 - Celery + Redis background/scheduled processing.
 - Full reporting suite (CSV/PDF export, dashboard metrics).
 - Observability stack (structured logging, monitoring, alerting).
@@ -1120,17 +1113,15 @@ Reason: Keeps a human accountable for financial decisions while still benefiting
 Tradeoff: Slower resolution than full automation, in exchange for safety and auditability.
 Alternative considered: Fully autonomous AI resolution (rejected — inappropriate risk for financial records).
 
-**Why CSV first?**
-Decision: Start with CSV/synthetic data before live Razorpay integration.
+**Why synthetic/normalized data only?**
+Decision: Run the controller entirely on its own normalized internal data model and the deterministic synthetic dataset; external payment-provider ingestion is out of scope.
 Reason: Enables building and testing the reconciliation engine without external dependencies or credentials. *(Architectural rationale.)*
-Tradeoff: CSV workflow will need to coexist with, or be replaced by, live ingestion later.
-Alternative considered: Building the Razorpay integration first (rejected — adds external dependency risk early).
+Tradeoff: Demo data must be clearly labeled as synthetic rather than live production traffic.
 
-**Why Razorpay through an adapter?**
-Decision: Access Razorpay only through a dedicated adapter layer.
-Reason: Isolates the reconciliation engine from gateway-specific details, and improves testability. *(Architectural rationale.)*
-Tradeoff: Slightly more upfront structure than calling the API directly.
-Alternative considered: Direct API calls from the reconciliation engine (rejected — couples core logic to a specific vendor).
+**Why did the external-provider adapter get removed?**
+Decision: The original adapter-layer integration (and its sync endpoints) was fully removed so the repository runs credential-free end to end.
+Reason: The core controller value (normalization, metrics, reconciliation, triage, AI investigation) never depended on a live gateway; removing it eliminated external dependency risk and secret-management surface. *(Architectural rationale.)*
+Tradeoff: Re-adding any future provider would require a new isolated adapter module plus explicit opt-in configuration.
 
 **Why Celery/Redis later?**
 Decision: Defer Celery/Redis until background/scheduled processing is actually needed.
@@ -1158,7 +1149,6 @@ Alternative considered: Introducing Celery/Redis from day one (rejected as prema
 | Auth | JWT | Authentication | Stateless API authentication |
 | Jobs | Celery | Background jobs | Async scheduled processing |
 | Queue/Broker | Redis | Job broker/cache | Background processing |
-| Integration | Razorpay API | Payment data | Real payment/settlement source |
 
 ---
 
@@ -1170,7 +1160,7 @@ Alternative considered: Introducing Celery/Redis from day one (rejected as prema
 | FastAPI | Yes | Yes |
 | PostgreSQL | Yes | Yes |
 | CSV | Yes | Yes |
-| Razorpay | Later | Yes |
+| External provider ingestion | No (removed) | Optional, adapter-isolated |
 | AI | Later | Yes |
 | LangGraph | Later | Yes |
 | JWT | Later | Yes |
@@ -1193,7 +1183,7 @@ A phase (or the project) is considered done against this document when:
 - [ ] Backend/database communication is documented.
 - [ ] AI boundaries (recommendation vs. fact) are documented and enforced in code.
 - [ ] LangGraph's role is documented and does not overlap with the reconciliation engine.
-- [ ] Razorpay integration goes through the adapter boundary.
+- [ ] No external payment-provider integration exists in the application path (removed by design).
 - [ ] Authentication architecture is documented (even if not yet implemented).
 - [ ] Celery/Redis roles are documented (even if not yet implemented).
 - [ ] Security practices in [Section 29](#29-security-architecture) are followed.
@@ -1235,9 +1225,10 @@ A phase (or the project) is considered done against this document when:
                                 (single source of truth)
                                          ↑
                     ┌────────────────────┴────────────────────┐
-                    ↓                                          ↓
-              CSV → Ingestion → Normalization        Razorpay → Adapter → Normalization
-                  (current)                                  (planned)
+                     ↓                                          ↓
+        Synthetic dataset (deterministic          Normalized internal records
+             demos and evaluation)                  (own database, no external
+                                                     provider ingestion)
 
                           Celery / Redis (planned)
                     orbit around background processing:

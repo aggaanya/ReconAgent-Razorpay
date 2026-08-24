@@ -11,8 +11,7 @@ Conventions:
   adds validation, lifecycle, and HTTP error mapping only — no financial
   logic lives here.
 - The agent is built once per process (pooled LLM client) and rebuilt
-  automatically after a reset (tests/lifespan), mirroring the Razorpay
-  service pattern in ``app.api.razorpay``.
+  automatically after a reset (tests/lifespan).
 - A missing LLM key is a deployment state, not a crash: clean 503 with a
   message naming the missing variable (never any secret material). An
   unconfigured database answers 503 through the shared app-wide handler.
@@ -42,13 +41,20 @@ from app.schemas.ai import (
     AiChatResponse,
     AiReconcileRequest,
     AiReconcileResponse,
+    AiReconcileCompareRequest,
+    AiReconcileCompareResponse,
 )
 from app.schemas.reconciliation import (
     DEFAULT_MAX_SETTLEMENT_DELAY_DAYS,
     ReconciliationEvaluationReport,
     ReconciliationResult,
 )
-from app.services.reconciliation import evaluate_batch_with_ground_truth
+from app.services.reconciliation import (
+    build_report,
+    evaluate_batch_with_ground_truth,
+)
+from app.services.reconciliation_drift import compare_runs
+from app.services.reconciliation_synthetic import generate_synthetic_batch
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +121,13 @@ def ai_chat(
 
 
 def _reconcile_signals(
-    summary: dict, exceptions: list[dict], seed: int, size: int
+    summary: dict, exceptions: list[dict], seed: int, size: int, exception_summary: dict | None = None
 ) -> dict:
     """Structured facts handed to the LLM (never ground truth)."""
     return {
         "data": {
             "summary": summary,
+            "exception_summary": exception_summary,
             "exceptions": exceptions,
         },
         "dataset": {
@@ -183,13 +190,17 @@ def ai_reconcile(
         try:
             reply = agent.llm_service.explain_signals(
                 _reconcile_signals(
-                    data, exceptions, payload.seed, payload.size
+                    data,
+                    exceptions,
+                    payload.seed,
+                    payload.size,
+                    envelope.get("exception_summary"),
                 ),
                 question=(
                     payload.question
                     or "Explain this reconciliation outcome for a business "
-                    "owner: what matches, what went wrong, and what needs "
-                    "human review."
+                    "owner: what matches, what went wrong, what is the financial "
+                    "exposure, and what needs human review."
                 ),
                 system_prompt=INTERPRETATION_SYSTEM_PROMPT,
             )
@@ -218,6 +229,7 @@ def ai_reconcile(
         processing_time_ms=data["processing_time_ms"],
         throughput_records_per_second=data["throughput_records_per_second"],
         exception_breakdown=data["exception_breakdown"],
+        exception_summary=envelope.get("exception_summary"),
         exceptions=[ReconciliationResult.model_validate(e) for e in exceptions],
         errors=errors,
     )
@@ -262,3 +274,87 @@ def ai_reconcile_evaluation(
         size=size,
         max_settlement_delay_days=max_settlement_delay_days,
     )
+
+
+@router.post(
+    "/reconcile/compare",
+    response_model=AiReconcileCompareResponse,
+    summary="Compare two reconciliation runs (What Changed / Drift Analysis)",
+    description=(
+        "Deterministically compares previous vs current reconciliation runs "
+        "and computes match-rate change, exception-count change, exposure "
+        "change, category drifts, priority distribution shifts, and major "
+        "drivers. With `explain=true` an LLM narrative is attached describing "
+        "the backend-computed facts."
+    ),
+)
+def ai_reconcile_compare(
+    payload: AiReconcileCompareRequest,
+) -> AiReconcileCompareResponse:
+    agent: FinanceIntelligenceAgent | None = None
+    if payload.explain:
+        agent = get_ai_agent()
+
+    logger.info(
+        "AI reconciliation comparison requested (prev_seed=%d, curr_seed=%d)",
+        payload.previous_seed,
+        payload.current_seed,
+    )
+
+    prev_batch = generate_synthetic_batch(
+        seed=payload.previous_seed, size=payload.previous_size
+    )
+    prev_report = build_report(
+        prev_batch.payments, prev_batch.settlements, prev_batch.refunds
+    )
+
+    curr_batch = generate_synthetic_batch(
+        seed=payload.current_seed, size=payload.current_size
+    )
+    curr_report = build_report(
+        curr_batch.payments, curr_batch.settlements, curr_batch.refunds
+    )
+
+    drift = compare_runs(
+        prev_report,
+        curr_report,
+        previous_seed=payload.previous_seed,
+        current_seed=payload.current_seed,
+    )
+
+    errors: list[str] = []
+    answer: str | None = None
+
+    if agent is not None:
+        try:
+            drift_facts = {
+                "data": {
+                    "drift": drift.model_dump(mode="json"),
+                    "previous_summary": prev_report.summary.model_dump(mode="json"),
+                    "current_summary": curr_report.summary.model_dump(mode="json"),
+                }
+            }
+            reply = agent.llm_service.explain_signals(
+                drift_facts,
+                question=(
+                    "Explain what changed between the previous and current reconciliation runs: "
+                    "what is the match-rate trend, what drove exception/exposure shifts, "
+                    "and what should the finance team focus on?"
+                ),
+                system_prompt=INTERPRETATION_SYSTEM_PROMPT,
+            )
+            answer = reply.content
+        except LLMError as exc:
+            logger.warning("Drift explanation failed (%s)", type(exc).__name__)
+            errors.append(
+                "The drift analysis completed, but the narrative explanation is unavailable."
+            )
+
+    return AiReconcileCompareResponse(
+        drift=drift,
+        previous_summary=prev_report.summary,
+        current_summary=curr_report.summary,
+        answer=answer,
+        errors=errors,
+    )
+

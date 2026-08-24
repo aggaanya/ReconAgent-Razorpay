@@ -218,7 +218,7 @@ class TestListEndpoints:
 
 class TestUnconfiguredDatabase:
     def test_missing_database_url_yields_503(self, monkeypatch):
-        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("DATABASE_URL", "")
         get_settings.cache_clear()
         try:
             with TestClient(app) as client:
@@ -334,7 +334,7 @@ class TestMetricEndpoints:
         ).status_code == 422
 
     def test_metric_endpoints_require_database(self, monkeypatch):
-        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("DATABASE_URL", "")
         get_settings.cache_clear()
         try:
             with TestClient(app) as client:

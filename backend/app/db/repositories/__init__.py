@@ -13,7 +13,6 @@ from .order import OrderRepository
 from .payment import PaymentRepository
 from .refund import RefundRepository
 from .settlement import SettlementRepository
-from .sync_run import SyncRunRepository
 
 __all__ = [
     "CountSumAggregate",
@@ -26,7 +25,6 @@ __all__ = [
     "RepositoryError",
     "SettlementAggregate",
     "SettlementRepository",
-    "SyncRunRepository",
     "UpsertOutcome",
     "UpsertResult",
 ]

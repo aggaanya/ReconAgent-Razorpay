@@ -387,13 +387,13 @@ Deliberate, documented non-goals of this iteration:
   / `tax_minor` off the payment record and does no rate math; where the
   provider omits them, differences surface as legacy
   `AMOUNT_MISMATCH` rather than being silently approved.
-- **No refund fee rebates.** Razorpay's fee handling on refunds is
+- **No refund fee rebates.** Provider fee handling on refunds is
   merchant-configuration-dependent and undocumented in this project, so
   a full refund leaves the expectation at −fee−tax (reported honestly,
   see tests) instead of guessing rebate behavior.
 - **Timing needs configuration and clocks.** R9 runs only when callers
   supply `max_settlement_delay_days` *and* both records carry dates;
-  there is no assumed payout schedule — none is documented by Razorpay.
+  there is no assumed payout schedule in the data model.
 - **Batch-level settlements.** Real `Settlement` rows aggregate many
   payments with no per-payment reference, so per-payment expectations
   come from payment-record components, not settlement-batch fees.

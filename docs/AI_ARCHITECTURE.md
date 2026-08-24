@@ -19,10 +19,10 @@ Recommendations remain a future phase.
 ## 1. Current architecture
 
 ```
-Razorpay API
-      │  (sync, read-only)
+Normalized internal data model / synthetic dataset
+      │
       ▼
-PostgreSQL database            app.db.*
+Own database (PostgreSQL)       app.db.*
       │
       ▼
 Finance Intelligence Engine    app.services.metrics.FinanceService
@@ -96,7 +96,7 @@ default system prompt:
 - calculate success rate, failure rate, or refund rate
 - calculate settlement differences or any other metric
 - invent, estimate, "correct", or extrapolate missing financial values
-- query the database directly or access raw Razorpay records
+- query the database directly or access raw ledger records
 - replace `FinanceService` in any data path
 
 If asked for numbers it was not given, the correct behavior is to say the

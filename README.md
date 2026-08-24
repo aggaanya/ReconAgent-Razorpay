@@ -14,15 +14,17 @@ The authoritative product/technical blueprint is [`docs/ReconAgent_Master_Spec.m
 
 | Module | Status |
 |---|---|
-| Backend FastAPI service (`/health`, `/readiness`), PostgreSQL schema + Alembic migrations, Razorpay integration & sync | ✅ implemented |
+| Backend FastAPI service (`/health`, `/readiness`), PostgreSQL schema + Alembic migrations | ✅ implemented |
 | Finance metrics + REST APIs (`/api/v1/finance/*`) | ✅ implemented |
 | Deterministic reconciliation engine (Track 04) — fixed rules R0–R9, refund integrity, fee/tax expected settlement, typed exception reasons, compound exceptions | ✅ implemented (`backend/app/services/reconciliation.py`) |
+| Financial Impact Calculation & Impact-Aware Prioritization — deterministic minor-unit exposure per exception, intra-band priority boost | ✅ implemented (`backend/app/services/reconciliation_policy.py`) |
+| What-Changed Drift Analysis (`POST /api/v1/ai/reconcile/compare`) — deterministic run-over-run match rate, count, exposure, category and priority shifts | ✅ implemented (`backend/app/services/reconciliation_drift.py`) |
 | Synthetic 100-record dataset with per-case ground truth + evaluation benchmark (`scripts/reconcile_benchmark.py`) — measured match rate and **100% benchmark accuracy**, precision/recall/F1 | ✅ implemented |
 | LangGraph workflow (plan → execute tools → analyze signals → interpret) over read-only finance tools | ✅ implemented (`backend/app/ai/graph/`) |
-| LLM explanation layer — **AI is explanation-only**: it describes engine-computed facts and never calculates financial truth | ✅ implemented (`backend/app/ai/llm.py`) |
-| AI reconciliation endpoint `POST /api/v1/ai/reconcile` (+ `POST /api/v1/ai/chat`) | ✅ implemented |
-| Frontend reconciliation dashboard (summary cards, match breakdown, typed exception table, opt-in AI narrative) | ✅ implemented (`frontend/src/pages/ReconciliationPage.jsx`) |
-| Backend test suite | ✅ **728+ passing** (`pytest`; count subject to the latest run) |
+| LLM explanation layer — **AI is explanation-only**: it describes engine-computed facts (including financial impact & drift) and never calculates financial truth | ✅ implemented (`backend/app/ai/llm.py`) |
+| AI reconciliation endpoint `POST /api/v1/ai/reconcile` (+ `POST /api/v1/ai/chat` & `POST /api/v1/ai/reconcile/compare`) | ✅ implemented |
+| Frontend reconciliation dashboard (summary cards, priority breakdown, match breakdown, typed exception table with impact column/sorting/filtering, What-Changed drift panel, opt-in AI narrative) | ✅ implemented (`frontend/src/pages/ReconciliationPage.jsx`) |
+| Backend test suite | ✅ **568 passing, 1 skipped** (`pytest`) |
 
 Ground truth exists only in the synthetic generator, tests, and the benchmark — never as an input to the engine or any serving path.
 
@@ -42,10 +44,12 @@ React + Vite  ──REST/JSON──▶  FastAPI Backend
                 │                           read-only tools)
                 └─────────────────┬─────────────────┘
                                   ▼
-                             PostgreSQL
-                                  ▼
-                    CSV / Razorpay data sources
+                     Own Database / Synthetic Dataset
 ```
+
+ReconAgent operates on a normalized internal financial data model.
+Synthetic data is provided for deterministic demos and evaluation.
+External payment-provider ingestion is outside the core controller.
 
 ### Non-negotiable responsibility split
 
@@ -103,15 +107,15 @@ razorpay/                          # monorepo root
 |---|---|---|
 | **1. Project Setup** | Repo structure, environments; FastAPI + React skeletons boot and talk via `/health` | **Complete** |
 | 2. Database | PostgreSQL schema via SQLAlchemy + Alembic | **Complete** |
-| 3. Synthetic Data | Labeled dataset for evaluation | **Complete** (seeded 100-record reconciliation batch; CSV datasets superseded by Razorpay API sync) |
-| 4. Data Ingestion | Provider ingestion + validation | **Complete** (Razorpay API sync with upserts; CSV upload endpoints not built) |
+| 3. Synthetic Data | Labeled dataset for evaluation | **Complete** (seeded 100-record reconciliation batch) |
+| 4. Data Ingestion | Normalized internal data model | **Complete** (own database persistence; external payment-provider ingestion is out of scope for the core controller) |
 | 5. Deterministic Matching Engine | Matching, tolerance, match rate | **Complete** (Track 04 payments-vs-settlements loop with rules R0–R9) |
 | 6. Exception Management | Exception queue + tracking | Partial (typed exception report/table; no approval queue yet) |
 | 7–8. AI Investigation | Agent tools, LangGraph state machine | Mostly complete (read-only tools, LangGraph workflow, signal analysis, LLM explanation) |
 | 9. Human Approval | Approve/reject/resolve workflow | Deferred |
 | 10. Dashboard | React dashboard | Partial (reconciliation dashboard live; full KPI/queue views pending) |
-| 11. Razorpay Integration | Exploratory feasibility assessment | **Complete** (production-style client + sync verified with mocks/fakes) |
-| 12–13. Testing & Demo Prep | Extended test suites + demo rehearsal | In progress (728+ backend tests passing) |
+| 11. External Provider Integration | Exploratory feasibility assessment | **Removed** (external payment-provider ingestion is outside the core controller; the app runs on its own database/synthetic dataset) |
+| 12–13. Testing & Demo Prep | Extended test suites + demo rehearsal | In progress |
 
 ---
 
@@ -143,7 +147,7 @@ Copy-Item frontend\.env.example frontend\.env
 Then edit `backend\.env`:
 - Replace `CHANGE_ME` values (`JWT_SECRET`, `DATABASE_URL` password).
 - All credentials are optional; the service boots and the demo runs without them.
-- **Zero-credential Track 04 demo:** the reconciliation dashboard loads a seeded synthetic batch by default — Razorpay keys are only needed for live API sync.
+- **Zero-credential Track 04 demo:** the reconciliation dashboard loads a seeded synthetic batch by default — no external credentials of any kind are required.
 - Generate a strong JWT secret:
 
 ```powershell
@@ -181,7 +185,7 @@ The page shows **Backend Status: Connected / Unavailable**, driven by a real req
 3. Flip **AI explanation** to request an LLM narrative (needs `LLM_API_KEY`; the deterministic report is unaffected without it).
 4. The **Reconciliation Evaluation** card shows measured quality for the same batch — accuracy, precision/recall/F1, FP/FN, throughput — from the evaluation-only surface `GET /api/v1/ai/reconcile/evaluation` (isolated ground truth; the serving API never sees it).
 5. The **AI Assistant** tab asks natural-language questions through the existing LangGraph endpoint `POST /api/v1/ai/chat`: the agent plans Finance Tools, runs them deterministically, derives signals, and only then narrates. Without an LLM key it answers 503 and the UI explains what is missing.
-6. **System Status** tab shows backend connectivity. Razorpay API integration stays optional — its endpoints answer with a sanitized `not_configured` response until keys are set.
+6. **System Status** tab shows backend connectivity. ReconAgent operates on a normalized internal financial data model — no external payment-provider integration exists or is required.
 
 ---
 
@@ -204,7 +208,7 @@ Backend (pytest) — from `backend/` with the venv active:
 .\.venv\Scripts\python.exe -m pytest -q        # or simply: pytest
 ```
 
-Covers: application startup/lifespan, `/health` and `/readiness` contracts, settings loading, CORS, Razorpay client/sync/repositories, finance metrics and APIs, the deterministic reconciliation engine (rules R0–R9, refund integrity, expected settlement, compound exceptions), the deterministic triage policy (severity/priority/recommended actions per exception type), the synthetic dataset/ground-truth alignment, the LangGraph workflow safety properties, and the AI endpoints — currently **753 passing tests** (count subject to the latest run).
+Covers: application startup/lifespan, `/health` and `/readiness` contracts, settings loading, CORS, repositories, finance metrics and APIs, the deterministic reconciliation engine (rules R0–R9, refund integrity, expected settlement, compound exceptions), the deterministic triage policy (severity/priority/recommended actions per exception type), the synthetic dataset/ground-truth alignment, the LangGraph workflow safety properties, and the AI endpoints — currently **535 passing tests** (plus 5 skipped; count subject to the latest run).
 
 Machine-readable evaluation: `backend/.venv/Scripts/python.exe scripts/reconcile_benchmark.py --json` prints the same payload as `GET /api/v1/ai/reconcile/evaluation` — accuracy/precision/recall/F1, TP/FP/FN, throughput and exception distribution measured against isolated ground truth (evaluation-only; serving responses keep `accuracy=null`).
 
@@ -240,8 +244,9 @@ Annotated templates: [`backend/.env.example`](backend/.env.example), [`frontend/
 | `LLM_API_KEY` | backend | AI foundation (mandatory in `production` validation) | *(provider key)* |
 | `LLM_MODEL` | backend | AI foundation | `gpt-4o-mini` |
 | `LLM_BASE_URL` / `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | backend | AI foundation (optional overrides) | *(unset)* / `30` / `2` |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | backend | integration phase | *(optional until then)* |
 | `VITE_API_BASE_URL` | frontend | Phase 1 | `http://localhost:8000` |
+
+There are no external payment-provider configuration variables: ReconAgent operates on a normalized internal financial data model, with synthetic data for deterministic demos and evaluation.
 
 ### Secrets policy
 
@@ -264,7 +269,7 @@ Annotated templates: [`backend/.env.example`](backend/.env.example), [`frontend/
 - [x] Frontend displays live backend status (Connected / Unavailable) from a real API call
 - [x] Environment-based configuration loading works (pydantic-settings, `.env` support)
 - [x] CORS configured per-environment for local development
-- [x] Backend tests pass (now 728+); frontend build passes
+- [x] Backend tests pass (535 passing, 5 skipped); frontend build passes
 
 ---
 

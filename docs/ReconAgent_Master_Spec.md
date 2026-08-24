@@ -5,6 +5,8 @@
 **Status:** Draft v1.0 — Hackathon Master Blueprint
 **Prepared for:** Razorpay AI Builder / AI Finance Controller Hackathon
 
+> **Architecture note (post-implementation):** ReconAgent operates on a normalized internal financial data model. Synthetic data is provided for deterministic demos and evaluation. External payment-provider ingestion is outside the core controller — the exploratory provider integration described below was removed from the codebase, and this document is retained as the original hackathon blueprint.
+
 ---
 
 ### How to read this document — Source Labeling Convention

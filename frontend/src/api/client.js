@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
 
 async function request(path, options = {}, { timeoutMs = 10000 } = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -32,6 +32,42 @@ export async function getHealth() {
 }
 
 /**
+ * One processed refund line inside ReconciliationEvidence — verbatim
+ * from the backend, never recomputed.
+ * @typedef {Object} RefundEvidence
+ * @property {string} refund_id
+ * @property {number} amount_minor
+ * @property {string|null} [currency]
+ * @property {string|null} [status]
+ */
+
+/**
+ * Structured audit view of one reconciliation decision. Every value is
+ * copied from the deterministic engine output (records, component
+ * amounts, expected vs actual) — presentation code must render it
+ * as-is and never derive new financial values from it.
+ * @typedef {Object} ReconciliationEvidence
+ * @property {string|null} payment_id
+ * @property {number|null} payment_amount_minor
+ * @property {string|null} settlement_id
+ * @property {number|null} settlement_amount_minor
+ * @property {string[]} additional_settlement_ids - extra line ids beyond
+ *   the primary (DUPLICATE_SETTLEMENT); empty otherwise
+ * @property {RefundEvidence[]} refunds - itemized processed refunds
+ * @property {number|null} gross_amount_minor
+ * @property {number|null} refunded_total_minor
+ * @property {number|null} fee_minor
+ * @property {number|null} tax_minor
+ * @property {number|null} expected_settlement_minor
+ * @property {number|null} actual_settlement_minor
+ * @property {number|null} difference_minor
+ * @property {string} status - terminal reconciliation status
+ * @property {string[]} rules_triggered - terminal status value first,
+ *   then any secondary issue values (e.g. SETTLEMENT_DELAY)
+ * @property {string} reason - the engine's deterministic reason, verbatim
+ */
+
+/**
  * @typedef {Object} ReconciliationException
  * @property {string} source_transaction_id
  * @property {string|null} matched_transaction_id
@@ -50,6 +86,8 @@ export async function getHealth() {
  *   (CRITICAL=100 … INFO=10); deterministic, not a learned score
  * @property {string} [recommended_action] - deterministic operator
  *   guidance for exceptions; never present on matched records
+ * @property {ReconciliationEvidence} [evidence] - structured audit view
+ *   attached by the backend; null when produced without the evidence pass
  */
 
 /**
@@ -174,6 +212,27 @@ export async function postAiChat(question) {
     // default timeout; keep a generous ceiling instead of guessing speed.
     { timeoutMs: 60000 },
   )
+}
+
+/**
+ * Runs a deterministic What-Changed comparison between two reconciliation runs.
+ *
+ * @param {{previous_seed?: number, previous_size?: number, current_seed?: number, current_size?: number, explain?: boolean}} [params]
+ * @returns {Promise<Object>}
+ */
+export async function postReconcileCompare(params = {}) {
+  return request('/api/v1/ai/reconcile/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      previous_seed: 41,
+      previous_size: 100,
+      current_seed: 42,
+      current_size: 100,
+      explain: true,
+      ...params,
+    }),
+  })
 }
 
 export function getApiBaseUrl() {

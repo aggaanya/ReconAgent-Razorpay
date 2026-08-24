@@ -19,7 +19,7 @@ in the generator module, never here: the engine cannot see it.
 
 from datetime import date
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -176,6 +176,119 @@ class ReconciliationSettlementLine(BaseModel):
         return value.strip()
 
 
+class RefundEvidence(BaseModel):
+    """One processed refund line inside :class:`ReconciliationEvidence`.
+
+    A verbatim copy of the refund record the engine debited — no derived
+    values, so the UI can itemize refunds without recomputing anything.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    refund_id: str = Field(description="Provider refund id")
+    amount_minor: int = Field(ge=0, description="Refunded amount, minor units")
+    currency: str | None = Field(
+        default=None, description="Refund currency when known"
+    )
+    status: str | None = Field(
+        default=None, description="Refund lifecycle status when known"
+    )
+
+
+class ReconciliationEvidence(BaseModel):
+    """Structured audit view of one deterministic decision.
+
+    Every field is **copied** from the records the engine already
+    reconciled (or from the decision itself) — nothing is recalculated
+    here and no new arithmetic exists in this vocabulary. The frontend
+    renders this payload verbatim to explain WHY a case was classified
+    the way it was; the LLM may narrate it but may never alter it.
+
+    ``None`` means "not applicable to this case" (e.g. ``settlement_id``
+    on MISSING_SETTLEMENT), never an unknown value.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Payment side.
+    payment_id: str | None = Field(
+        default=None, description="Provider payment id when the case has one"
+    )
+    payment_amount_minor: int | None = Field(
+        default=None, description="Payment gross amount, minor units"
+    )
+    #: Settlement side (first/attribution line; duplicates are listed in
+    #: ``additional_settlement_ids``).
+    settlement_id: str | None = Field(
+        default=None, description="Primary settlement line id for the case"
+    )
+    settlement_amount_minor: int | None = Field(
+        default=None,
+        description="Primary settlement line amount, minor units",
+    )
+    additional_settlement_ids: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Extra settlement line ids beyond the primary (DUPLICATE_"
+            "SETTLEMENT); empty otherwise"
+        ),
+    )
+    #: Itemized processed refunds debited by the engine (input order).
+    refunds: tuple[RefundEvidence, ...] = Field(default_factory=tuple)
+    #: Component breakdown behind the expected settlement (verbatim).
+    gross_amount_minor: int | None = Field(
+        default=None, description="Payment gross amount, minor units"
+    )
+    refunded_total_minor: int | None = Field(
+        default=None, description="Sum of processed refunds debited"
+    )
+    fee_minor: int | None = Field(
+        default=None, description="Recorded provider fee included in math"
+    )
+    tax_minor: int | None = Field(
+        default=None, description="Recorded fee tax included in math"
+    )
+    #: The engine's own expected/actual/difference triple, copied as-is.
+    expected_settlement_minor: int | None = Field(
+        default=None,
+        description="Engine-computed expected settlement (gross − "
+        "refunds − fee − tax), minor units",
+    )
+    actual_settlement_minor: int | None = Field(
+        default=None, description="Settled amount the engine compared, "
+        "minor units"
+    )
+    difference_minor: int | None = Field(
+        default=None, description="actual − expected, minor units"
+    )
+    #: Decision identity.
+    status: ReconciliationStatus = Field(
+        description="Terminal reconciliation status of the decision"
+    )
+    rules_triggered: tuple[str, ...] = Field(
+        description=(
+            "Rule outcomes that fired: the terminal status value first, "
+            "then any secondary issue values (e.g. SETTLEMENT_DELAY)"
+        )
+    )
+    reason: str = Field(
+        description="The engine's deterministic reason, verbatim"
+    )
+    #: Financial impact annotation — copied from the triage pass, never
+    #: recomputed.  None for MATCHED or when impact cannot be determined.
+    financial_impact_minor: int | None = Field(
+        default=None,
+        ge=0,
+        description="Absolute financial exposure in minor units; "
+        "None for MATCHED or when impact cannot be safely determined",
+    )
+    financial_impact_reason: str | None = Field(
+        default=None,
+        description="Deterministic explanation of how the financial "
+        "impact was calculated",
+    )
+
+
 class ReconciliationResult(BaseModel):
     """One deterministic reconciliation decision.
 
@@ -261,6 +374,38 @@ class ReconciliationResult(BaseModel):
             "MATCHED (nothing to investigate)"
         ),
     )
+    #: Deterministic financial-impact annotation — computed by the triage
+    #: policy from the engine's own amount fields. The LLM may narrate it
+    #: but must never recalculate it.
+    financial_impact_minor: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Absolute financial exposure in minor units for this "
+            "exception; None for MATCHED results or when impact cannot "
+            "be safely determined from available evidence"
+        ),
+    )
+    financial_impact_reason: str | None = Field(
+        default=None,
+        description=(
+            "Deterministic explanation of how financial_impact_minor "
+            "was calculated; None when no impact is computed"
+        ),
+    )
+    #: Structured audit view of the decision (records + amounts + rules),
+    #: attached as a pure projection by
+    #: app.services.reconciliation_evidence — ``None`` when the result was
+    #: produced without the evidence pass (e.g. raw :func:`reconcile`
+    #: output). Additive and optional, so legacy consumers are unaffected.
+    evidence: ReconciliationEvidence | None = Field(
+        default=None,
+        description=(
+            "Structured reconciliation evidence (payment/settlement/"
+            "refund records, component amounts, expected vs actual, "
+            "rules triggered, reason); None when not attached"
+        ),
+    )
 
     @property
     def is_exception(self) -> bool:
@@ -295,10 +440,73 @@ class ReconciliationSummary(BaseModel):
     exception_breakdown: dict[str, int] = Field(default_factory=dict)
 
 
+class ExceptionSummary(BaseModel):
+    """Aggregate exception summary including total exposure and priority counts."""
+
+    total_exceptions: int = Field(ge=0)
+    total_financial_exposure_minor: int = Field(ge=0)
+    exposure_currency: str | None = Field(default="INR")
+    critical_count: int = Field(ge=0)
+    high_count: int = Field(ge=0)
+    medium_count: int = Field(ge=0)
+    low_count: int = Field(ge=0)
+    critical_exposure_minor: int = Field(ge=0)
+    high_exposure_minor: int = Field(ge=0)
+    medium_exposure_minor: int = Field(ge=0)
+    low_exposure_minor: int = Field(ge=0)
+    top_exception_categories: list[dict[str, Any]] = Field(default_factory=list)
+    top_impact_exceptions: list[dict[str, Any]] = Field(default_factory=list)
+    largest_unresolved_exposure_minor: int = Field(ge=0, default=0)
+
+
+class CategoryDrift(BaseModel):
+    """Drift metrics for one exception category between two runs."""
+
+    category: str
+    previous_count: int = Field(ge=0)
+    current_count: int = Field(ge=0)
+    count_change: int
+    previous_exposure_minor: int = Field(ge=0)
+    current_exposure_minor: int = Field(ge=0)
+    exposure_change_minor: int
+
+
+class PriorityDrift(BaseModel):
+    """Drift metrics for one severity priority band between two runs."""
+
+    severity: str
+    previous_count: int = Field(ge=0)
+    current_count: int = Field(ge=0)
+    count_change: int
+    previous_exposure_minor: int = Field(ge=0)
+    current_exposure_minor: int = Field(ge=0)
+    exposure_change_minor: int
+
+
+class ReconciliationDriftAnalysis(BaseModel):
+    """Deterministic comparison between two reconciliation runs (What Changed?)."""
+
+    previous_seed: int | None = None
+    current_seed: int | None = None
+    previous_match_rate: float | None = None
+    current_match_rate: float | None = None
+    match_rate_change_pp: float | None = None
+    previous_exception_count: int = Field(ge=0)
+    current_exception_count: int = Field(ge=0)
+    exception_count_change: int
+    previous_financial_exposure_minor: int = Field(ge=0)
+    current_financial_exposure_minor: int = Field(ge=0)
+    financial_exposure_change_minor: int
+    category_drifts: list[CategoryDrift] = Field(default_factory=list)
+    priority_drifts: list[PriorityDrift] = Field(default_factory=list)
+    major_drivers: list[str] = Field(default_factory=list)
+
+
 class ReconciliationReport(BaseModel):
     """Full structured outcome of one reconciliation run."""
 
     summary: ReconciliationSummary
+    exception_summary: ExceptionSummary | None = None
     #: Every decision, matched or not (audit trail; small batches only).
     results: list[ReconciliationResult] = Field(default_factory=list)
     #: The exception deliverable — every non-MATCHED decision verbatim.

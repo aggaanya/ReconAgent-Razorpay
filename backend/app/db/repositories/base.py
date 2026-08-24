@@ -10,7 +10,7 @@ Upsert strategy — portable and race-aware-enough:
 
 This keeps behavior identical across PostgreSQL (production) and SQLite
 (unit tests) without dialect-specific ``ON CONFLICT`` statements, and makes
-re-running a sync over already-stored data naturally idempotent.
+re-inserting already-stored records naturally idempotent.
 """
 
 from collections.abc import Callable, Sequence
@@ -141,7 +141,7 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-# Columns that describe row lifecycle rather than synced data; never copied
+# Columns that describe row lifecycle rather than record data; never copied
 # between rows by upserts.
 LIFECYCLE_COLUMNS = frozenset({"id", "created_at", "updated_at"})
 
@@ -153,7 +153,7 @@ def model_values(model: Any) -> dict[str, Any]:
     non-nullable columns with Python-side defaults (e.g. ``notes`` built as
     ``{}`` only at flush time) read as ``None`` on a transient instance.
     Writing that ``None`` through would clobber the stored default and fake
-    a change on every re-sync, so declared defaults are materialized here.
+    a change on every re-upsert, so declared defaults are materialized here.
     """
     values: dict[str, Any] = {}
     for column in model.__table__.columns:

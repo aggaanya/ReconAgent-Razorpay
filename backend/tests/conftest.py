@@ -13,8 +13,9 @@ from app.main import app as fastapi_app
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """TestClient with lifespan executed and an isolated settings cache."""
+    monkeypatch.setenv("DATABASE_URL", "")
     get_settings.cache_clear()
     with TestClient(fastapi_app) as test_client:
         yield test_client

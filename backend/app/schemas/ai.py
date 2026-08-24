@@ -15,12 +15,17 @@ from app.schemas.reconciliation import (
     DEFAULT_MAX_SETTLEMENT_DELAY_DAYS,
     ReconcileSourceName,
     ReconciliationResult,
+    ExceptionSummary,
+    ReconciliationDriftAnalysis,
+    ReconciliationSummary,
 )
 
 #: Hard cap on question length. The question is embedded verbatim in LLM
 #: prompts (planner + interpreter); a bound keeps prompt size and abuse
 #: surface finite while being generous for finance questions.
 MAX_QUESTION_LENGTH = 1000
+
+
 
 
 class AiChatRequest(BaseModel):
@@ -146,5 +151,27 @@ class AiReconcileResponse(BaseModel):
     processing_time_ms: float = Field(ge=0)
     throughput_records_per_second: float = Field(ge=0)
     exception_breakdown: dict[str, int] = Field(default_factory=dict)
+    exception_summary: ExceptionSummary | None = None
     exceptions: list[ReconciliationResult] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+
+class AiReconcileCompareRequest(BaseModel):
+    """Request for What-Changed comparison between two reconciliation runs."""
+
+    previous_seed: int = Field(default=41, ge=0, description="Previous run seed")
+    previous_size: int = Field(default=100, ge=50, le=5000, description="Previous batch size")
+    current_seed: int = Field(default=42, ge=0, description="Current run seed")
+    current_size: int = Field(default=100, ge=50, le=5000, description="Current batch size")
+    explain: bool = Field(default=True, description="Attach LLM drift explanation")
+
+
+class AiReconcileCompareResponse(BaseModel):
+    """Deterministic comparison between two runs plus optional LLM narrative."""
+
+    drift: ReconciliationDriftAnalysis
+    previous_summary: ReconciliationSummary
+    current_summary: ReconciliationSummary
+    answer: str | None = None
+    errors: list[str] = Field(default_factory=list)
+

@@ -1,9 +1,9 @@
-"""Finance API — DB-backed reads over synced Razorpay records.
+"""Finance API — DB-backed reads over the normalized internal records.
 
 Conventions:
 
 - Prefix ``/api/v1/finance``; everything here reads local persistence only
-  (no provider calls — trigger ``POST /api/v1/sync/runs`` to refresh).
+  (no external provider calls are made anywhere in the application).
 - ``start``/``end`` are ISO calendar dates interpreted as inclusive UTC day
   bounds; bad input yields a clean 422 from FastAPI.
 - Metric-grade routes (``/payment-performance``, ``/revenue``, ``/trends``)

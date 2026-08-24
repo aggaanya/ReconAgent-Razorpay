@@ -231,7 +231,7 @@ def test_build_report_annotates_all_results_end_to_end() -> None:
     matched_seen = False
     for result in report.results:
         assert result.severity in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
-        assert result.priority == EXPECTED_PRIORITY[result.severity]
+        assert result.priority >= EXPECTED_PRIORITY[result.severity]
         if result.is_exception:
             assert isinstance(result.recommended_action, str)
             assert result.recommended_action.strip()
@@ -261,7 +261,7 @@ def test_api_serves_triage_annotations(client: TestClient) -> None:
     for item in exceptions:
         expected_sev = EXPECTED_SEVERITY[ReconciliationStatus(item["status"])]
         assert item["severity"] == expected_sev
-        assert item["priority"] == EXPECTED_PRIORITY[expected_sev]
+        assert item["priority"] >= EXPECTED_PRIORITY[expected_sev]
         assert isinstance(item["recommended_action"], str)
         assert item["recommended_action"].strip()
 

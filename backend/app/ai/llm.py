@@ -7,11 +7,11 @@ Architectural boundary (docs/AI_ARCHITECTURE.md — the short version):
   **structured financial signals**.
 - This service receives those already-computed signals and returns
   human-language interpretation. It never queries the database, never
-  reads raw Razorpay records, and never calculates a metric itself.
+  reads raw ledger records, and never calculates a metric itself.
 - The default system prompt encodes this boundary so the provider-side
   model is also instructed not to compute or invent financial figures.
 
-Design mirrors ``app.integrations.razorpay`` conventions:
+Design conventions:
 
 - One :class:`LLMService` owns one OpenAI SDK client (connection pooling)
   and is safe to reuse; it is a context manager for lifecycle control.
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FINANCE_SYSTEM_PROMPT = (
     "You are the AI layer of a finance controller application for an "
-    "Indian payments business (Razorpay data).\n"
+    "Indian payments business (normalized internal ledger data).\n"
     "You receive FINANCIAL SIGNALS that were already computed by a "
     "deterministic calculation engine from verified transaction records.\n"
     "Hard rules you must never break:\n"

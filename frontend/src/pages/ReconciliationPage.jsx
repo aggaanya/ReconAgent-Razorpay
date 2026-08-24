@@ -3,6 +3,8 @@ import { getApiBaseUrl } from '../api/client.js'
 import EvaluationCard from '../components/EvaluationCard.jsx'
 import ExceptionTable from '../components/ExceptionTable.jsx'
 import MatchBreakdownChart from '../components/MatchBreakdownChart.jsx'
+import PriorityBreakdown from '../components/PriorityBreakdown.jsx'
+import WhatChangedPanel from '../components/WhatChangedPanel.jsx'
 import SummaryCard from '../components/SummaryCard.jsx'
 import {
   RECONCILE_STATUS,
@@ -68,7 +70,7 @@ export default function ReconciliationPage() {
               Synthetic Demo Dataset
             </span>{' '}
             (seeded, deterministic &middot; no credentials required) &middot;{' '}
-            Razorpay API integration is optional &middot; backend{' '}
+            normalized internal data model, no external provider &middot; backend{' '}
             <code className="rounded bg-slate-100 px-1">{getApiBaseUrl()}</code>
           </p>
         </div>
@@ -156,6 +158,8 @@ export default function ReconciliationPage() {
             </div>
           </section>
 
+          <PriorityBreakdown exceptionSummary={report.exception_summary} />
+
           <EvaluationCard
             status={evaluation.status}
             evaluation={evaluation.evaluation}
@@ -202,6 +206,8 @@ export default function ReconciliationPage() {
               </p>
             )}
           </section>
+
+          <WhatChangedPanel />
         </>
       ) : null}
     </main>

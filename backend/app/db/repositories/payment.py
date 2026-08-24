@@ -2,7 +2,7 @@
 
 All queries live here; services never write SQLAlchemy inline. Sessions are
 injected, flushed but not committed — transaction boundaries belong to the
-caller (sync service / request scope).
+caller (request scope).
 """
 
 from collections.abc import Sequence

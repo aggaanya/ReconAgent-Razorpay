@@ -25,10 +25,10 @@ LLM (orchestration)                (interpretation via app.ai.llm.LLMService)
 ## 1. Why this layer exists
 
 The future LangGraph/agent layer must never touch SQLAlchemy sessions,
-repositories, SQL, or Razorpay APIs directly, and the LLM must never be
-trusted to compute financial values. Finance Tools are the narrow,
-validated, JSON-only seam in between (the graph reaches them exclusively
-through `get_finance_tool(name).run(session, arguments)`):
+repositories, SQL, or external provider APIs directly, and the LLM must
+never be trusted to compute financial values. Finance Tools are the
+narrow, validated, JSON-only seam in between (the graph reaches them
+exclusively through `get_finance_tool(name).run(session, arguments)`):
 
 - one tool = one `FinanceService` capability;
 - typed Pydantic inputs validated at the boundary (so LLM-produced
@@ -140,7 +140,8 @@ Sanitization rules (enforced centrally in `FinanceTool.run`):
 Tools **never**: open/store database sessions (one is injected per call;
 `reconcile_transactions` is the deliberate exception — it declares
 `requires_session = False` because it reconciles a seeded synthetic batch,
-never live records), touch repositories or SQL, call Razorpay APIs, call
+never live records), touch repositories or SQL, call external payment-
+provider APIs, call
 the LLM, expose
 connection strings/API keys, or accept free-form queries. The AI layer can
 only obtain financial data through these fixed contracts.

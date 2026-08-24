@@ -8,6 +8,5 @@ from .order import Order
 from .payment import Payment
 from .refund import Refund
 from .settlement import Settlement
-from .sync_run import SyncRun, SyncStatus
 
-__all__ = ["Order", "Payment", "Refund", "Settlement", "SyncRun", "SyncStatus"]
+__all__ = ["Order", "Payment", "Refund", "Settlement"]

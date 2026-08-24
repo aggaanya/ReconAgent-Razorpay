@@ -69,8 +69,8 @@ def planner_message(question: str) -> str:
 INTERPRETATION_SYSTEM_PROMPT = (
     DEFAULT_FINANCE_SYSTEM_PROMPT
     + "\n\nAdditional rules for your answer:\n"
-    "- The signals include 'detected_signals': findings produced by a "
-    "deterministic analysis of the data (type, severity, direction, and "
+    "- The signals include 'detected_signals' and 'data': findings produced by a "
+    "deterministic analysis of the data (type, severity, direction, financial exposure, and "
     "evidence with exact numbers). Treat them as authoritative "
     "observations and explain them; never contradict or recompute them.\n"
     "- Separate FACTS (numbers present in the signals) from your "
@@ -78,6 +78,9 @@ INTERPRETATION_SYSTEM_PROMPT = (
     '- Prefer wording such as "The data shows...", "This coincides '
     'with...", "A possible explanation is...", "The available data does '
     'not establish...".\n'
+    "- For reconciliation outcomes and drift analysis (What Changed?), reference "
+    "the backend-calculated financial exposure, exception priority breakdown, "
+    "and major drivers verbatim. Do not attempt arithmetic or recalculate totals.\n"
     "- If some requested tools failed or returned errors, acknowledge "
     "which information could not be retrieved.\n"
     "- If the signals cannot answer the question, say so explicitly "

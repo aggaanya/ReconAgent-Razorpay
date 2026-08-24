@@ -105,6 +105,11 @@ class ReconcileTransactionsTool(FinanceTool):
                 ),
             },
             "data": result.summary.model_dump(mode="json"),
+            "exception_summary": (
+                result.exception_summary.model_dump(mode="json")
+                if result.exception_summary
+                else None
+            ),
             "exceptions": [
                 exception.model_dump(mode="json")
                 for exception in result.exceptions

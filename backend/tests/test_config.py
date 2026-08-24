@@ -7,11 +7,7 @@ from app.core.config import (
     DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT_SECONDS,
-    DEFAULT_RAZORPAY_BASE_URL,
-    DEFAULT_RAZORPAY_MAX_RETRIES,
-    DEFAULT_RAZORPAY_TIMEOUT_SECONDS,
     LLM_MAX_RETRIES_UPPER_BOUND,
-    RAZORPAY_MAX_RETRIES_UPPER_BOUND,
     Settings,
 )
 
@@ -23,11 +19,6 @@ CREDENTIAL_ENV_VARS = (
     "LLM_BASE_URL",
     "LLM_TIMEOUT_SECONDS",
     "LLM_MAX_RETRIES",
-    "RAZORPAY_KEY_ID",
-    "RAZORPAY_KEY_SECRET",
-    "RAZORPAY_BASE_URL",
-    "RAZORPAY_TIMEOUT_SECONDS",
-    "RAZORPAY_MAX_RETRIES",
     "ENVIRONMENT",
     "CORS_ORIGINS",
 )
@@ -46,13 +37,11 @@ def make_settings() -> Settings:
 
 
 class TestDefaults:
-    def test_future_credentials_are_optional(self, clean_env) -> None:
+    def test_credentials_are_optional(self, clean_env) -> None:
         settings = make_settings()
         assert settings.database_url is None
         assert settings.jwt_secret is None
         assert settings.llm_api_key is None
-        assert settings.razorpay_key_id is None
-        assert settings.razorpay_key_secret is None
 
     def test_environment_defaults_to_development(self, clean_env) -> None:
         assert make_settings().environment == "development"
@@ -214,133 +203,6 @@ class TestLLMConfiguration:
         clean_env.setenv("ENVIRONMENT", "production")
         issues = make_settings().configuration_issues()
         assert any("LLM_API_KEY" in issue for issue in issues)
-
-
-class TestRazorpayConfiguration:
-    """RAZORPAY_* settings: defaults, overrides, validation, configured state."""
-
-    def test_default_base_url_and_timeout(self, clean_env) -> None:
-        settings = make_settings()
-        assert settings.razorpay_base_url == DEFAULT_RAZORPAY_BASE_URL
-        assert settings.razorpay_base_url == "https://api.razorpay.com/v1"
-        assert settings.razorpay_timeout_seconds == (
-            DEFAULT_RAZORPAY_TIMEOUT_SECONDS
-        )
-
-    def test_default_constants_are_secure(self) -> None:
-        # Guard rail: the shipped default must never regress to plain HTTP.
-        assert DEFAULT_RAZORPAY_BASE_URL.startswith("https://")
-        assert DEFAULT_RAZORPAY_TIMEOUT_SECONDS > 0
-
-    def test_valid_configuration_loads(self, clean_env) -> None:
-        clean_env.setenv("RAZORPAY_KEY_ID", "rzp_test_1A2b3C4d5E6f7G")
-        clean_env.setenv("RAZORPAY_KEY_SECRET", "test-secret-value")
-        settings = make_settings()
-        assert settings.razorpay_key_id == "rzp_test_1A2b3C4d5E6f7G"
-        assert settings.razorpay_key_secret.get_secret_value() == "test-secret-value"
-        assert settings.razorpay_configured is True
-
-    def test_missing_credentials_are_unconfigured(self, clean_env) -> None:
-        settings = make_settings()
-        assert settings.razorpay_key_id is None
-        assert settings.razorpay_key_secret is None
-        assert settings.razorpay_configured is False
-
-    @pytest.mark.parametrize(
-        ("key_id", "key_secret"),
-        [
-            ("rzp_test_abc", None),
-            (None, "some-secret"),
-            ("", ""),
-            ("   ", "some-secret"),
-        ],
-    )
-    def test_blank_or_partial_credentials_are_unconfigured(
-        self, clean_env, key_id, key_secret
-    ) -> None:
-        if key_id is not None:
-            clean_env.setenv("RAZORPAY_KEY_ID", key_id)
-        if key_secret is not None:
-            clean_env.setenv("RAZORPAY_KEY_SECRET", key_secret)
-        settings = make_settings()
-        assert settings.razorpay_configured is False
-
-    def test_base_url_override_normalizes_trailing_slash(self, clean_env) -> None:
-        clean_env.setenv("RAZORPAY_BASE_URL", "https://api.example.com/v1/")
-        assert make_settings().razorpay_base_url == "https://api.example.com/v1"
-
-    def test_timeout_override(self, clean_env) -> None:
-        clean_env.setenv("RAZORPAY_TIMEOUT_SECONDS", "2.5")
-        assert make_settings().razorpay_timeout_seconds == pytest.approx(2.5)
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            "http://api.razorpay.com/v1",  # insecure scheme
-            "ftp://api.razorpay.com/v1",
-            "api.razorpay.com/v1",  # no scheme
-            "",  # empty
-        ],
-    )
-    def test_insecure_or_invalid_base_url_rejected(self, clean_env, raw) -> None:
-        clean_env.setenv("RAZORPAY_BASE_URL", raw)
-        with pytest.raises(ValidationError):
-            make_settings()
-
-    @pytest.mark.parametrize("raw", ["0", "-1", "not-a-number", ""])
-    def test_non_positive_or_invalid_timeout_rejected(self, clean_env, raw) -> None:
-        clean_env.setenv("RAZORPAY_TIMEOUT_SECONDS", raw)
-        with pytest.raises(ValidationError):
-            make_settings()
-
-    def test_default_max_retries_is_bounded_and_sane(self, clean_env) -> None:
-        settings = make_settings()
-        assert settings.razorpay_max_retries == DEFAULT_RAZORPAY_MAX_RETRIES
-        assert 0 <= DEFAULT_RAZORPAY_MAX_RETRIES <= RAZORPAY_MAX_RETRIES_UPPER_BOUND
-
-    def test_max_retries_override(self, clean_env) -> None:
-        clean_env.setenv("RAZORPAY_MAX_RETRIES", "7")
-        assert make_settings().razorpay_max_retries == 7
-
-    def test_zero_max_retries_disables_retries(self, clean_env) -> None:
-        clean_env.setenv("RAZORPAY_MAX_RETRIES", "0")
-        assert make_settings().razorpay_max_retries == 0
-
-    @pytest.mark.parametrize("raw", ["-1", "11", "not-a-number"])
-    def test_invalid_max_retries_rejected(self, clean_env, raw) -> None:
-        clean_env.setenv("RAZORPAY_MAX_RETRIES", raw)
-        with pytest.raises(ValidationError):
-            make_settings()
-
-
-class TestRazorpaySecretSafety:
-    """The key secret must never surface in repr/logs/error text."""
-
-    SECRET = "super-secret-razorpay-key"
-
-    def _make_settings_with_secret(self, monkeypatch) -> Settings:
-        monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test_publicid")
-        monkeypatch.setenv("RAZORPAY_KEY_SECRET", self.SECRET)
-        return Settings(_env_file=None)
-
-    def test_key_secret_masked_in_repr_and_str(self, clean_env) -> None:
-        settings = self._make_settings_with_secret(clean_env)
-        assert isinstance(settings.razorpay_key_secret, SecretStr)
-        assert self.SECRET not in repr(settings)
-        assert self.SECRET not in str(settings.razorpay_key_secret)
-
-    def test_key_secret_absent_from_validation_errors(self, clean_env) -> None:
-        # An unrelated invalid setting must never echo the Razorpay secret.
-        clean_env.setenv("RAZORPAY_KEY_SECRET", self.SECRET)
-        clean_env.setenv("RAZORPAY_TIMEOUT_SECONDS", "-5")
-        with pytest.raises(ValidationError) as exc_info:
-            make_settings()
-        assert self.SECRET not in str(exc_info.value)
-
-    def test_key_id_is_not_treated_as_a_secret(self, clean_env) -> None:
-        # Key id is a public identifier (Basic Auth username); readable is fine.
-        clean_env.setenv("RAZORPAY_KEY_ID", "rzp_test_publicid")
-        assert make_settings().razorpay_key_id == "rzp_test_publicid"
 
 
 class TestConfigurationIssues:

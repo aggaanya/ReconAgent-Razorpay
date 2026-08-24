@@ -1,19 +1,20 @@
-"""Track 04 demo contract: the full workflow runs WITHOUT Razorpay credentials.
+"""Demo contract: the full workflow runs WITHOUT any external credentials.
 
-The demo experience must never require ``RAZORPAY_KEY_ID`` /
-``RAZORPAY_KEY_SECRET``:
-- the application boots and reports ready with Razorpay unconfigured;
+ReconAgent operates on a normalized internal financial data model;
+synthetic data is provided for deterministic demos and evaluation.
+External payment-provider ingestion is outside the core controller:
+
+- the application boots and reports ready with zero credentials set;
 - ``POST /api/v1/ai/reconcile`` serves the canonical synthetic batch with
-  zero external dependencies (no database, no Razorpay, LLM off);
-- every Razorpay-backed endpoint keeps answering with its sanitized
-  ``not_configured`` response instead of failing or leaking secrets.
+  zero external dependencies (no database, no provider API, LLM off);
+- the evaluation endpoint measures quality against isolated ground truth
+  without any credentials either.
 """
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.main import app
 from app.schemas.reconciliation import ReconciliationStatus
 from app.services.reconciliation_synthetic import CASE_DISTRIBUTION
 
@@ -26,16 +27,17 @@ DEFAULT_MATCH_RATE = round(DEFAULT_MATCHED / DEFAULT_TOTAL * 100, 2)
 
 
 @pytest.fixture
-def no_razorpay_credentials(monkeypatch):
-    """Remove Razorpay credentials and reset the settings cache."""
-    monkeypatch.delenv("RAZORPAY_KEY_ID", raising=False)
-    monkeypatch.delenv("RAZORPAY_KEY_SECRET", raising=False)
+def no_external_credentials(monkeypatch):
+    """Remove every optional credential and reset the settings cache."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 
 
-class TestDemoWorksWithoutRazorpayCredentials:
+class TestDemoWorksWithoutExternalCredentials:
     def test_app_boots_and_reports_ready(self, client) -> None:
         health = client.get("/health")
         assert health.status_code == 200
@@ -46,10 +48,14 @@ class TestDemoWorksWithoutRazorpayCredentials:
         body = readiness.json()
         assert body["status"] == "ready"
         assert body["issues"] == []
-        assert body["config"]["razorpay_configured"] is False
+        assert body["config"] == {
+            "database_configured": False,
+            "auth_configured": False,
+            "llm_configured": False,
+        }
 
     def test_synthetic_reconciliation_serves_full_report(
-        self, client, no_razorpay_credentials
+        self, client, no_external_credentials
     ) -> None:
         response = client.post(
             "/api/v1/ai/reconcile",
@@ -70,28 +76,16 @@ class TestDemoWorksWithoutRazorpayCredentials:
         for entry in report["exceptions"]:
             assert entry["exception_type"]
             assert entry["source_transaction_id"]
+            # Deterministic triage ships on every exception row.
+            assert entry["severity"] in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+            assert isinstance(entry["priority"], int)
+            assert entry["recommended_action"]
 
-    def test_connection_endpoint_stays_sanitized_without_credentials(
-        self, client, no_razorpay_credentials
+    def test_evaluation_endpoint_needs_no_credentials(
+        self, client, no_external_credentials
     ) -> None:
-        response = client.get("/api/v1/razorpay/connection")
-        assert response.status_code == 503
-        assert response.json() == {
-            "connected": False,
-            "environment": "unknown",
-            "error": {
-                "code": "not_configured",
-                "message": "Razorpay credentials are not configured",
-            },
-        }
-
-    def test_resource_endpoints_fail_closed_without_credentials(
-        self, client, no_razorpay_credentials
-    ) -> None:
-        payments = client.get("/api/v1/razorpay/payments")
-        assert payments.status_code == 503
-        assert "not configured" in payments.json()["detail"]
-
-        settlements = client.get("/api/v1/razorpay/settlements")
-        assert settlements.status_code == 503
-        assert "not configured" in settlements.json()["detail"]
+        response = client.get("/api/v1/ai/reconcile/evaluation")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["surface"] == "evaluation"
+        assert body["total_records"] == DEFAULT_TOTAL
