@@ -21,6 +21,9 @@ CREDENTIAL_ENV_VARS = (
     "LLM_MAX_RETRIES",
     "ENVIRONMENT",
     "CORS_ORIGINS",
+    "HF_TOKEN",
+    "HF_MODEL",
+    "HF_BASE_URL",
 )
 
 

@@ -26,6 +26,10 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# Hugging Face Inference API defaults (OpenAI-compatible endpoint)
+DEFAULT_HF_BASE_URL = "https://api-inference.huggingface.co/v1"
+DEFAULT_HF_MODEL = "google/gemma-2-2b-it"
+
 
 Environment = Literal["development", "test", "production"]
 
@@ -111,6 +115,19 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
 
     llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
+
+    # ------------------------------------------------------------------
+    # Hugging Face Inference API (convenience aliases)
+    # ------------------------------------------------------------------
+    # When set, these are mapped to the LLM_* fields above so the rest
+    # of the application needs no changes.  LLM_* always wins when both
+    # are specified, keeping Ollama / custom providers fully supported.
+
+    hf_token: SecretStr | None = None
+
+    hf_model: str | None = None
+
+    hf_base_url: str | None = None
 
     # ------------------------------------------------------------------
     # Validators
@@ -248,6 +265,95 @@ class Settings(BaseSettings):
             )
 
         return value
+
+    @field_validator("hf_token", mode="before")
+    @classmethod
+    def _blank_hf_token_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank Hugging Face tokens as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("hf_model", mode="before")
+    @classmethod
+    def _blank_hf_model_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank Hugging Face model names as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("hf_base_url", mode="before")
+    @classmethod
+    def _validate_hf_base_url(
+        cls,
+        value: object,
+    ) -> object:
+        """Validate the Hugging Face Inference API endpoint URL.
+
+        Rules:
+
+        1. Empty values are treated as unset.
+        2. HTTPS is required (remote endpoint).
+        3. Trailing slashes are removed.
+        """
+
+        if value is None:
+            return None
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().rstrip("/")
+
+        parsed = urlparse(normalized)
+
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                "HF_BASE_URL must be an absolute URL"
+            )
+
+        if parsed.scheme != "https":
+            raise ValueError(
+                "HF_BASE_URL must use HTTPS"
+            )
+
+        return normalized
+
+    @model_validator(mode="after")
+    def _resolve_hf_to_llm(self) -> "Settings":
+        """Map Hugging Face env vars to the LLM fields the rest of the app uses.
+
+        HF_* are convenience aliases.  LLM_* always wins when both are set,
+        so Ollama / custom-provider configurations are never overridden.
+        """
+        updates: dict[str, object] = {}
+
+        if self.hf_token is not None and self.llm_api_key is None:
+            updates["llm_api_key"] = self.hf_token
+
+        if self.hf_model is not None and self.llm_model == DEFAULT_LLM_MODEL:
+            updates["llm_model"] = self.hf_model
+
+        if self.hf_base_url is not None and self.llm_base_url is None:
+            updates["llm_base_url"] = self.hf_base_url
+
+        if updates:
+            return self.model_copy(update=updates)
+
+        return self
 
     # ------------------------------------------------------------------
     # Properties

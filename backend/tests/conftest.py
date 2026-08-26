@@ -17,6 +17,9 @@ def client(monkeypatch):
     """TestClient with lifespan executed and an isolated settings cache."""
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("HF_TOKEN", "")
+    monkeypatch.setenv("HF_MODEL", "")
+    monkeypatch.setenv("HF_BASE_URL", "")
     get_settings.cache_clear()
     with TestClient(fastapi_app) as test_client:
         yield test_client
