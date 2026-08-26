@@ -167,6 +167,7 @@ class LLMService:
         base_url: str | None = None,
         timeout_seconds: float = 30.0,
         max_retries: int = 2,
+        max_tokens: int | None = 384,
         system_prompt: str = DEFAULT_FINANCE_SYSTEM_PROMPT,
         client: openai.OpenAI | None = None,
     ) -> None:
@@ -181,6 +182,7 @@ class LLMService:
         if not 0 <= max_retries <= 10:
             raise ValueError("max_retries must be between 0 and 10")
         self._model = model
+        self._max_tokens = max_tokens
         self._system_prompt = system_prompt
         self._client = client or openai.OpenAI(
             api_key=api_key,
@@ -302,6 +304,8 @@ class LLMService:
                 {"role": "user", "content": user},
             ],
         }
+        if self._max_tokens is not None:
+            kwargs["max_tokens"] = self._max_tokens
         if extra:
             kwargs.update(extra)
         logger.debug(

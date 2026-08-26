@@ -596,6 +596,28 @@ class TestStateSafety:
         assert "sk-super-secret-value" not in catalog
         assert "api_key" not in PLANNER_SYSTEM_PROMPT.lower()
 
+    def test_planner_prompt_contains_tool_routing_rules(self):
+        assert "TOOL ROUTING RULES" in PLANNER_SYSTEM_PROMPT
+        assert "revenue" in PLANNER_SYSTEM_PROMPT
+        assert "financial_summary" in PLANNER_SYSTEM_PROMPT
+        assert "Do NOT use 'financial_summary' for revenue-specific questions" in PLANNER_SYSTEM_PROMPT
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What was my revenue this month?",
+            "Show me the biggest financial issues.",
+            "How much have I paid in fees and taxes?",
+            "Are there any refunds that look suspicious?",
+        ],
+    )
+    def test_suggested_questions_route_to_valid_tools(self, stub_tools, question):
+        llm = StubLLM(plan_payload={}, plan_error=LLMConnectionError("down"))
+        result = make_agent(llm).run(SESSION, question)
+        assert result.selection_source == "keyword_fallback"
+        for tool_name in result.selected_tools:
+            assert tool_name in stub_tools
+
     def test_graph_modules_have_no_forbidden_capabilities(self):
         import inspect
 

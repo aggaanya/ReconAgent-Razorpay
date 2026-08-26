@@ -23,11 +23,12 @@ Conventions:
 """
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session as OrmSession
 
-from app.ai.graph.prompts import INTERPRETATION_SYSTEM_PROMPT
+from app.ai.graph.prompts import INTERPRETATION_SYSTEM_PROMPT, RECONCILIATION_EXPLAIN_SYSTEM_PROMPT
 from app.ai.graph.service import FinanceAgentResult, FinanceIntelligenceAgent
 from app.ai.llm import LLMError, LLMNotConfiguredError
 from app.ai.tools import (
@@ -85,6 +86,7 @@ def reset_ai_agent() -> None:
 
 def _to_response(result: FinanceAgentResult) -> AiChatResponse:
     """Project the graph result onto the public chat schema."""
+
     return AiChatResponse(
         question=result.question,
         status=result.status,
@@ -123,12 +125,22 @@ def ai_chat(
 def _reconcile_signals(
     summary: dict, exceptions: list[dict], seed: int, size: int, exception_summary: dict | None = None
 ) -> dict:
-    """Structured facts handed to the LLM (never ground truth)."""
-    return {
+    """Structured facts handed to the LLM (never ground truth).
+
+    The payload is intentionally compact: only the fields the LLM needs
+    to narrate the reconciliation outcome.  Raw exception records are NOT
+    included — only aggregate counts, exposure, and a short sample.
+    """
+    signals: dict[str, Any] = {
         "data": {
-            "summary": summary,
-            "exception_summary": exception_summary,
-            "exceptions": exceptions,
+            "total_records": summary.get("total_records"),
+            "matched_count": summary.get("matched_count"),
+            "exception_count": summary.get("exception_count"),
+            "unresolved_count": summary.get("unresolved_count"),
+            "match_rate": summary.get("match_rate"),
+            "processing_time_ms": summary.get("processing_time_ms"),
+            "throughput_records_per_second": summary.get("throughput_records_per_second"),
+            "exception_breakdown": summary.get("exception_breakdown", {}),
         },
         "dataset": {
             "source": "synthetic",
@@ -136,6 +148,40 @@ def _reconcile_signals(
             "size": size,
         },
     }
+
+    if exception_summary:
+        signals["exception_summary"] = exception_summary
+        exposure_minor = exception_summary.get("total_financial_exposure_minor", 0)
+        currency = exception_summary.get("exposure_currency") or "INR"
+        signals["exposure_human_readable"] = (
+            f"{currency} {exposure_minor / 100:,.2f}"
+        )
+    else:
+        signals["exception_summary"] = None
+        signals["exposure_human_readable"] = None
+
+    if exceptions:
+        sample: list[dict[str, Any]] = []
+        for exc in exceptions[:5]:
+            entry: dict[str, Any] = {
+                "status": exc.get("status") or exc.get("exception_type"),
+                "severity": exc.get("severity"),
+                "reason": exc.get("reason", ""),
+            }
+            impact = exc.get("financial_impact_minor")
+            if impact is not None:
+                entry["financial_impact_minor"] = impact
+                entry["financial_impact_display"] = (
+                    f"{exc.get('currency', 'INR')} {impact / 100:,.2f}"
+                )
+            if exc.get("recommended_action"):
+                entry["recommended_action"] = exc["recommended_action"]
+            sample.append(entry)
+        signals["sample_exceptions"] = sample
+    else:
+        signals["sample_exceptions"] = []
+
+    return signals
 
 
 @router.post(
@@ -199,19 +245,25 @@ def ai_reconcile(
                 question=(
                     payload.question
                     or "Explain this reconciliation outcome for a business "
-                    "owner: what matches, what went wrong, what is the financial "
-                    "exposure, and what needs human review."
+                    "owner. Clarify that match rate is not accuracy. List "
+                    "top exception categories with financial impact, "
+                    "severity counts, unresolved items, and 2-3 recommended "
+                    "actions for critical/high items. Be concise."
                 ),
-                system_prompt=INTERPRETATION_SYSTEM_PROMPT,
+                system_prompt=RECONCILIATION_EXPLAIN_SYSTEM_PROMPT,
             )
             answer = reply.content
         except LLMError as exc:
+            # The provider exception can include transport or provider
+            # details.  Keep it in logs for diagnosis, but never return it
+            # to an API consumer; the deterministic report remains usable.
             logger.warning(
-                "Reconciliation explanation failed (%s)", type(exc).__name__
+                "Reconciliation explanation failed (%s)",
+                type(exc).__name__,
             )
             errors.append(
-                "The reconciliation completed, but the narrative "
-                "explanation is unavailable."
+                "AI narrative explanation is temporarily unavailable; the deterministic "
+                "reconciliation data is still available."
             )
 
     status = "completed" if answer is not None else "partial"
@@ -357,4 +409,3 @@ def ai_reconcile_compare(
         answer=answer,
         errors=errors,
     )
-

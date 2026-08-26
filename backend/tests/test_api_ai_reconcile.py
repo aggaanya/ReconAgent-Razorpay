@@ -206,6 +206,8 @@ class TestDegradationAndConfig:
         assert body["status"] == "partial"
         assert body["answer"] is None
         assert any("narrative" in e.lower() for e in body["errors"])
+        assert "down" not in " ".join(body["errors"]).lower()
+        assert "llmconnectionerror" not in " ".join(body["errors"]).lower()
         # The deterministic report survived the failure untouched.
         assert body["total_records"] == DEFAULT_TOTAL
         assert len(body["exceptions"]) == DEFAULT_EXCEPTIONS

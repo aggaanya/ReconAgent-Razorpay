@@ -270,7 +270,8 @@ class TestUnconfiguredDependencies:
         assert "LLM_API_KEY" in response.json()["detail"]
 
     def test_unconfigured_database_answers_503(self, monkeypatch):
-        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("DATABASE_URL", "")
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
         import app.api.ai as ai_module
 
         saved = ai_module._agent

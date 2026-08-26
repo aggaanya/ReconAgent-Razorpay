@@ -1,6 +1,17 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+// Reconciliation explanation makes one LLM call; the chat graph makes two
+// sequential LLM calls (plan + interpret). Keep each timeout greater than
+// the backend's per-attempt LLM timeout multiplied by the number of calls
+// plus HTTP/rendering margin.  Deployments can override at build time.
+const AI_RECONCILIATION_TIMEOUT_MS = Number(
+  import.meta.env.VITE_AI_RECONCILIATION_TIMEOUT_MS,
+) || 150_000
+const AI_CHAT_TIMEOUT_MS = Number(
+  import.meta.env.VITE_AI_CHAT_TIMEOUT_MS,
+) || 270_000
 
-async function request(path, options = {}, { timeoutMs = 10000 } = {}) {
+async function request(path, options = {}, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(timeoutMs),
@@ -115,17 +126,21 @@ export async function getHealth() {
  * @returns {Promise<ReconciliationResponse>}
  */
 export async function postAiReconcile(params = {}) {
-  return request('/api/v1/ai/reconcile', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      source: 'synthetic',
-      seed: 42,
-      size: 100,
-      explain: true,
-      ...params,
-    }),
-  })
+  return request(
+    '/api/v1/ai/reconcile',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'synthetic',
+        seed: 42,
+        size: 100,
+        explain: true,
+        ...params,
+      }),
+    },
+    { timeoutMs: AI_RECONCILIATION_TIMEOUT_MS },
+  )
 }
 
 /**
@@ -208,9 +223,7 @@ export async function postAiChat(question) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
     },
-    // LangGraph planning + tool runs + LLM interpretation can exceed the
-    // default timeout; keep a generous ceiling instead of guessing speed.
-    { timeoutMs: 60000 },
+    { timeoutMs: AI_CHAT_TIMEOUT_MS },
   )
 }
 

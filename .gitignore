@@ -8,12 +8,17 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-verify/
 venv/
 
 # Environment / secrets — never commit real credentials
 .env
 .env.*
 !.env.example
+
+# Node
+node_modules/
+dist/
 
 # OS / editor noise
 .DS_Store
