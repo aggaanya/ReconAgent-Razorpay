@@ -4,6 +4,8 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import (
+    DEFAULT_GEMINI_BASE_URL,
+    DEFAULT_GEMINI_MODEL,
     DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -24,6 +26,12 @@ CREDENTIAL_ENV_VARS = (
     "HF_TOKEN",
     "HF_MODEL",
     "HF_BASE_URL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_MODEL",
+    "GEMINI_API_KEY",
+    "GEMINI_BASE_URL",
+    "GEMINI_MODEL",
 )
 
 
@@ -245,3 +253,136 @@ class TestCachedSettings:
 
         get_settings.cache_clear()
         assert get_settings() is get_settings()
+
+
+class TestGeminiProvider:
+    """Google Gemini provider alias: GEMINI_API_KEY / GEMINI_MODEL / GEMINI_BASE_URL."""
+
+    def test_gemini_defaults(self, clean_env) -> None:
+        settings = make_settings()
+        assert settings.gemini_api_key is None
+        assert settings.gemini_model is None
+        assert settings.gemini_base_url is None
+
+    def test_gemini_key_populates_llm_api_key(self, clean_env) -> None:
+        clean_env.setenv("GEMINI_API_KEY", "gemini-test-key")
+        settings = make_settings()
+        assert settings.gemini_api_key is not None
+        assert settings.gemini_api_key.get_secret_value() == "gemini-test-key"
+        assert settings.llm_api_key is not None
+        assert settings.llm_api_key.get_secret_value() == "gemini-test-key"
+
+    def test_gemini_model_populates_llm_model(self, clean_env) -> None:
+        clean_env.setenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+        settings = make_settings()
+        assert settings.gemini_model == "gemini-3.1-pro-preview"
+        assert settings.llm_model == "gemini-3.1-pro-preview"
+
+    def test_gemini_base_url_populates_llm_base_url(self, clean_env) -> None:
+        clean_env.setenv(
+            "GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        settings = make_settings()
+        assert settings.llm_base_url == (
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+
+    def test_gemini_full_config(self, clean_env) -> None:
+        clean_env.setenv("GEMINI_API_KEY", "gemini-key-123")
+        clean_env.setenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+        clean_env.setenv(
+            "GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        settings = make_settings()
+        assert settings.llm_api_key.get_secret_value() == "gemini-key-123"
+        assert settings.llm_model == "gemini-3.1-pro-preview"
+        assert settings.llm_base_url == (
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+        assert settings.llm_configured is True
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_blank_gemini_key_is_unconfigured(self, clean_env, raw) -> None:
+        clean_env.setenv("GEMINI_API_KEY", raw)
+        settings = make_settings()
+        assert settings.gemini_api_key is None
+        assert settings.llm_api_key is None
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_blank_gemini_model_falls_back_to_default(
+        self, clean_env, raw
+    ) -> None:
+        clean_env.setenv("GEMINI_MODEL", raw)
+        assert make_settings().llm_model == DEFAULT_LLM_MODEL
+
+    def test_blank_gemini_base_url_is_unset(self, clean_env) -> None:
+        clean_env.setenv("GEMINI_BASE_URL", "")
+        assert make_settings().llm_base_url is None
+
+    def test_gemini_base_url_normalizes_trailing_slash(
+        self, clean_env
+    ) -> None:
+        clean_env.setenv(
+            "GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        assert make_settings().llm_base_url == (
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "http://generativelanguage.googleapis.com/v1",  # insecure
+            "ftp://generativelanguage.googleapis.com/v1",
+            "generativelanguage.googleapis.com/v1",  # no scheme
+        ],
+    )
+    def test_insecure_gemini_base_url_rejected(self, clean_env, raw) -> None:
+        clean_env.setenv("GEMINI_BASE_URL", raw)
+        with pytest.raises(ValidationError):
+            make_settings()
+
+    def test_gemini_key_is_masked_in_repr(self, clean_env) -> None:
+        secret = "gemini-secret-key"
+        clean_env.setenv("GEMINI_API_KEY", secret)
+        settings = make_settings()
+        assert isinstance(settings.gemini_api_key, SecretStr)
+        assert secret not in repr(settings)
+        assert secret not in str(settings.gemini_api_key)
+
+    def test_llm_api_key_takes_priority_over_gemini(
+        self, clean_env
+    ) -> None:
+        """LLM_API_KEY always wins when explicitly set."""
+        clean_env.setenv("LLM_API_KEY", "llm-direct-key")
+        clean_env.setenv("GEMINI_API_KEY", "gemini-key")
+        settings = make_settings()
+        assert settings.llm_api_key.get_secret_value() == "llm-direct-key"
+
+    def test_gemini_takes_priority_over_deepseek(
+        self, clean_env
+    ) -> None:
+        """Gemini aliases win over DeepSeek aliases when both are set."""
+        clean_env.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+        clean_env.setenv("GEMINI_API_KEY", "gemini-key")
+        settings = make_settings()
+        assert settings.llm_api_key.get_secret_value() == "gemini-key"
+
+    def test_gemini_takes_priority_over_hf(self, clean_env) -> None:
+        """Gemini aliases win over HF aliases when both are set."""
+        clean_env.setenv("GEMINI_API_KEY", "gemini-key")
+        clean_env.setenv("HF_TOKEN", "hf-token")
+        settings = make_settings()
+        assert settings.llm_api_key.get_secret_value() == "gemini-key"
+
+    def test_gemini_api_key_absent_from_validation_errors(
+        self, clean_env
+    ) -> None:
+        clean_env.setenv("GEMINI_API_KEY", "gemini-secret-key")
+        clean_env.setenv("LLM_TIMEOUT_SECONDS", "-5")
+        with pytest.raises(ValidationError) as exc_info:
+            make_settings()
+        assert "gemini-secret-key" not in str(exc_info.value)

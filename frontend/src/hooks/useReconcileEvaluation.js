@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getReconcileEvaluation } from '../api/client.js'
 
 export const EVALUATION_STATUS = {
@@ -17,6 +17,7 @@ export function useReconcileEvaluation(params = {}) {
   const [status, setStatus] = useState(EVALUATION_STATUS.IDLE)
   const [evaluation, setEvaluation] = useState(null)
   const [error, setError] = useState(null)
+  const hasRun = useRef(false)
 
   const run = useCallback(async () => {
     setStatus(EVALUATION_STATUS.RUNNING)
@@ -36,11 +37,13 @@ export function useReconcileEvaluation(params = {}) {
       )
       setStatus(EVALUATION_STATUS.UNAVAILABLE)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.seed, params.size])
 
   useEffect(() => {
-    run()
+    if (!hasRun.current) {
+      hasRun.current = true
+      run()
+    }
   }, [run])
 
   return { status, evaluation, error, rerun: run }

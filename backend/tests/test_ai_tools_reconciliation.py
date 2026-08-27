@@ -143,6 +143,7 @@ class TestPlannerVisibility:
 
         catalog = {entry["name"]: entry for entry in tool_catalog()}
         entry = catalog["reconcile_transactions"]
-        schema = entry["arguments_schema"]
-        assert schema["properties"]["size"]["minimum"] == 50
-        assert schema["properties"]["size"]["maximum"] == 5000
+        # Compact catalog format: "arguments" contains required + key optional fields.
+        args = entry["arguments"]
+        assert "size" in args
+        assert "source" in args

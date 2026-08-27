@@ -41,17 +41,22 @@ def reconcile_client(monkeypatch):
     reconcile endpoint never touches the database or an LLM.
     """
     import app.api.ai as ai_module
+    from app.core.cache import reconciliation_cache, signal_cache
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     saved = ai_module._agent
     ai_module._agent = None
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
     with TestClient(app) as test_client:
         yield test_client
     ai_module.reset_ai_agent()
     ai_module._agent = saved
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
 
 EXPECTED_SEVERITY = {
     ReconciliationStatus.DUPLICATE_SETTLEMENT: "CRITICAL",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { postAiReconcile } from '../api/client.js'
 
 export const RECONCILE_STATUS = {
@@ -16,6 +16,7 @@ export function useReconciliation(params = {}) {
   const [status, setStatus] = useState(RECONCILE_STATUS.IDLE)
   const [report, setReport] = useState(null)
   const [error, setError] = useState(null)
+  const hasRun = useRef(false)
 
   const run = useCallback(async () => {
     setStatus(RECONCILE_STATUS.RUNNING)
@@ -35,7 +36,10 @@ export function useReconciliation(params = {}) {
   }, [params.source, params.seed, params.size, params.explain])
 
   useEffect(() => {
-    run()
+    if (!hasRun.current) {
+      hasRun.current = true
+      run()
+    }
   }, [run])
 
   return { status, report, error, rerun: run }

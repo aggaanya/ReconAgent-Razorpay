@@ -223,6 +223,75 @@ class TestStructuredSignals:
             service.explain_signals({"bad": object()})
         assert completions.calls == []  # never reached the provider
 
+    def test_reconciliation_signals_are_serialized_with_exact_values(self):
+        """Reconciliation signals with all required keys are serialized
+        verbatim — no rounding, no conversion, no omission."""
+        service, completions = stub_service(lambda _: fake_response())
+        recon_signals = {
+            "data": {
+                "total_records": 100,
+                "matched_count": 70,
+                "exception_count": 30,
+                "unresolved_count": 2,
+                "match_rate": 70.0,
+            },
+            "exception_summary": {
+                "total_financial_exposure_minor": 16065382,
+                "critical_count": 5,
+                "high_count": 10,
+                "medium_count": 10,
+                "low_count": 5,
+                "critical_exposure_minor": 8000000,
+                "high_exposure_minor": 5000000,
+                "medium_exposure_minor": 2000000,
+                "low_exposure_minor": 1065382,
+            },
+        }
+        service.explain_signals(recon_signals)
+
+        user_content = completions.calls[0]["messages"][1]["content"]
+        # Every number must appear exactly as supplied
+        assert '"total_records": 100' in user_content
+        assert '"matched_count": 70' in user_content
+        assert '"exception_count": 30' in user_content
+        assert '"unresolved_count": 2' in user_content
+        assert '"match_rate": 70.0' in user_content
+        assert '"total_financial_exposure_minor": 16065382' in user_content
+        assert '"critical_count": 5' in user_content
+        assert '"high_count": 10' in user_content
+        assert '"medium_count": 10' in user_content
+        assert '"low_count": 5' in user_content
+
+    def test_explain_signals_never_modifies_signal_values(self):
+        """The LLM service must pass signals through without any
+        transformation — it is a framing layer only."""
+        service, completions = stub_service(lambda _: fake_response())
+        original = {
+            "match_rate": 70.0,
+            "total_financial_exposure_minor": 16065382,
+            "critical_count": 5,
+        }
+        service.explain_signals(dict(original))
+
+        user_content = completions.calls[0]["messages"][1]["content"]
+        # The original values must appear verbatim
+        for key, value in original.items():
+            expected = f'"{key}": {value}'
+            assert expected in user_content, (
+                f"Signal key {key} with value {value} not found verbatim "
+                f"in the LLM prompt"
+            )
+
+    def test_system_prompt_forbids_recalculating_financial_figures(self):
+        """The default system prompt must explicitly forbid recalculating,
+        converting, or reformatting financial numbers."""
+        lowered = DEFAULT_FINANCE_SYSTEM_PROMPT.lower()
+        assert "never derive" in lowered
+        assert "recompute" in lowered
+        assert "convert" in lowered
+        assert "reformat" in lowered
+        assert "never mention any number that is not present" in lowered
+
 
 class TestJsonMode:
     def test_returns_parsed_object(self):

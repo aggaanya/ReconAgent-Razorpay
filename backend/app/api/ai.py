@@ -35,6 +35,12 @@ from app.ai.tools import (
     RECONCILE_TRANSACTION_TOOL,
     FinanceToolError,
 )
+from app.core.cache import (
+    compare_cache_key,
+    evaluation_cache_key,
+    reconciliation_cache,
+    reconciliation_cache_key,
+)
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.schemas.ai import (
@@ -63,6 +69,43 @@ router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
 _agent: FinanceIntelligenceAgent | None = None
 
+# Maximum length for LLM-generated text returned to the frontend.
+_MAX_LLM_TEXT_LENGTH = 4_000
+
+
+def _sanitize_llm_text(text: str | None) -> str | None:
+    """Sanitize LLM-generated text before returning to the frontend.
+
+    Removes any attempt at system-prompt injection, tool execution
+    directives, or markdown-based data exfiltration. Truncates to a
+    reasonable length.
+    """
+    if text is None:
+        return None
+
+    sanitized = text.strip()
+
+    # Remove common prompt-injection patterns.
+    import re
+    injection_patterns = [
+        r"(?i)ignore\s+(all\s+)?previous\s+instructions",
+        r"(?i)ignore\s+(all\s+)?above\s+instructions",
+        r"(?i)you\s+are\s+now\s+",
+        r"(?i)disregard\s+(all\s+)?prior",
+        r"(?i)new\s+instructions:",
+        r"(?i)system\s*:\s*",
+        r"(?i)<\|im_start\|>",
+        r"(?i)<\|im_end\|>",
+    ]
+    for pattern in injection_patterns:
+        sanitized = re.sub(pattern, "[redacted]", sanitized)
+
+    # Truncate to bound the response size.
+    if len(sanitized) > _MAX_LLM_TEXT_LENGTH:
+        sanitized = sanitized[:_MAX_LLM_TEXT_LENGTH] + "..."
+
+    return sanitized
+
 
 def get_ai_agent() -> FinanceIntelligenceAgent:
     """FastAPI dependency returning the process-wide agent instance."""
@@ -90,7 +133,7 @@ def _to_response(result: FinanceAgentResult) -> AiChatResponse:
     return AiChatResponse(
         question=result.question,
         status=result.status,
-        answer=result.interpretation,
+        answer=_sanitize_llm_text(result.interpretation),
         selected_tools=result.selected_tools,
         selection_source=result.selection_source,
         tool_results=result.tool_results,
@@ -130,6 +173,11 @@ def _reconcile_signals(
     The payload is intentionally compact: only the fields the LLM needs
     to narrate the reconciliation outcome.  Raw exception records are NOT
     included — only aggregate counts, exposure, and a short sample.
+
+    All financial values are authoritative minor-unit integers supplied by
+    the deterministic engine.  This function NEVER converts, formats, or
+    recalculates any number — that responsibility belongs to the LLM
+    narrative layer which receives the raw values plus the currency code.
     """
     signals: dict[str, Any] = {
         "data": {
@@ -151,14 +199,8 @@ def _reconcile_signals(
 
     if exception_summary:
         signals["exception_summary"] = exception_summary
-        exposure_minor = exception_summary.get("total_financial_exposure_minor", 0)
-        currency = exception_summary.get("exposure_currency") or "INR"
-        signals["exposure_human_readable"] = (
-            f"{currency} {exposure_minor / 100:,.2f}"
-        )
     else:
         signals["exception_summary"] = None
-        signals["exposure_human_readable"] = None
 
     if exceptions:
         sample: list[dict[str, Any]] = []
@@ -171,9 +213,6 @@ def _reconcile_signals(
             impact = exc.get("financial_impact_minor")
             if impact is not None:
                 entry["financial_impact_minor"] = impact
-                entry["financial_impact_display"] = (
-                    f"{exc.get('currency', 'INR')} {impact / 100:,.2f}"
-                )
             if exc.get("recommended_action"):
                 entry["recommended_action"] = exc["recommended_action"]
             sample.append(entry)
@@ -212,6 +251,23 @@ def ai_reconcile(
         payload.seed,
         payload.size,
     )
+
+    # ---------------------------------------------------------------
+    # Check cache for previously computed deterministic results.
+    # ---------------------------------------------------------------
+    cache_key = reconciliation_cache_key(
+        source=payload.source,
+        seed=payload.seed,
+        size=payload.size,
+        max_settlement_delay_days=payload.max_settlement_delay_days,
+        explain=payload.explain,
+        question=payload.question,
+    )
+    cached = reconciliation_cache.get(cache_key)
+    if cached is not None:
+        logger.info("Reconciliation cache hit (key=%s)", cache_key)
+        return cached
+
     try:
         envelope = RECONCILE_TRANSACTION_TOOL.run(
             None,
@@ -269,9 +325,9 @@ def ai_reconcile(
     status = "completed" if answer is not None else "partial"
     if not payload.explain:
         status = "completed"
-    return AiReconcileResponse(
+    response = AiReconcileResponse(
         status=status,
-        answer=answer,
+        answer=_sanitize_llm_text(answer),
         total_records=data["total_records"],
         matched_count=data["matched_count"],
         exception_count=data["exception_count"],
@@ -285,6 +341,11 @@ def ai_reconcile(
         exceptions=[ReconciliationResult.model_validate(e) for e in exceptions],
         errors=errors,
     )
+
+    # Cache the response for identical deterministic inputs.
+    reconciliation_cache.set(cache_key, response)
+
+    return response
 
 
 @router.get(
@@ -321,11 +382,25 @@ def ai_reconcile_evaluation(
         seed,
         size,
     )
-    return evaluate_batch_with_ground_truth(
+
+    # Check cache for previously computed evaluation results.
+    cache_key = evaluation_cache_key(
         seed=seed,
         size=size,
         max_settlement_delay_days=max_settlement_delay_days,
     )
+    cached = reconciliation_cache.get(cache_key)
+    if cached is not None:
+        logger.info("Evaluation cache hit (key=%s)", cache_key)
+        return cached
+
+    result = evaluate_batch_with_ground_truth(
+        seed=seed,
+        size=size,
+        max_settlement_delay_days=max_settlement_delay_days,
+    )
+    reconciliation_cache.set(cache_key, result)
+    return result
 
 
 @router.post(
@@ -352,6 +427,19 @@ def ai_reconcile_compare(
         payload.previous_seed,
         payload.current_seed,
     )
+
+    # Check cache for previously computed comparison results.
+    cache_key = compare_cache_key(
+        previous_seed=payload.previous_seed,
+        previous_size=payload.previous_size,
+        current_seed=payload.current_seed,
+        current_size=payload.current_size,
+        explain=payload.explain,
+    )
+    cached = reconciliation_cache.get(cache_key)
+    if cached is not None:
+        logger.info("Compare cache hit (key=%s)", cache_key)
+        return cached
 
     prev_batch = generate_synthetic_batch(
         seed=payload.previous_seed, size=payload.previous_size
@@ -402,10 +490,13 @@ def ai_reconcile_compare(
                 "The drift analysis completed, but the narrative explanation is unavailable."
             )
 
-    return AiReconcileCompareResponse(
+    response = AiReconcileCompareResponse(
         drift=drift,
         previous_summary=prev_report.summary,
         current_summary=curr_report.summary,
-        answer=answer,
+        answer=_sanitize_llm_text(answer),
         errors=errors,
     )
+
+    reconciliation_cache.set(cache_key, response)
+    return response

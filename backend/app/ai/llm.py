@@ -43,12 +43,14 @@ DEFAULT_FINANCE_SYSTEM_PROMPT = (
     "deterministic calculation engine from verified transaction records.\n"
     "Hard rules you must never break:\n"
     "1. You do not calculate financial metrics. Every number in the "
-    "signals is authoritative; never derive, recompute, estimate, or "
-    "correct any figure.\n"
+    "signals is authoritative; never derive, recompute, estimate, convert, "
+    "reformat, or correct any figure.\n"
     "2. You never invent data that is not present in the signals.\n"
-    "3. You explain, interpret, and summarize what the signals mean for "
+    "3. You never mention any number that is not present in the supplied "
+    "signals.\n"
+    "4. You explain, interpret, and summarize what the signals mean for "
     "the business, in plain language.\n"
-    "4. If the signals are insufficient to answer, say so explicitly "
+    "5. If the signals are insufficient to answer, say so explicitly "
     "instead of guessing."
 )
 
@@ -58,6 +60,10 @@ DEFAULT_FINANCE_SYSTEM_PROMPT = (
 # fallback on purpose: anything not JSON-native must be rejected loudly
 # rather than silently stringified into the prompt.
 _JSON_DUMPS_KWARGS = {"sort_keys": True, "separators": (",", ": ")}
+
+# Maximum bytes for the signals payload sent to the LLM.
+# Keeps prompts within token limits for all supported models.
+_MAX_SIGNALS_BYTES = 12_000
 
 
 class LLMError(Exception):
@@ -275,6 +281,9 @@ class LLMService:
         ``signals`` must already contain every number to discuss — they are
         serialized verbatim into the prompt. This method adds no values of
         its own and performs no arithmetic; it is pure framing.
+
+        The serialized payload is bounded to ``_MAX_SIGNALS_BYTES`` to
+        keep prompts within token limits.
         """
         try:
             signals_json = json.dumps(dict(signals), **_JSON_DUMPS_KWARGS)
@@ -282,6 +291,10 @@ class LLMService:
             raise LLMError(
                 f"signals must be JSON-serializable: {exc}"
             ) from exc
+
+        # Truncate if signals exceed the budget.
+        if len(signals_json.encode("utf-8")) > _MAX_SIGNALS_BYTES:
+            signals_json = signals_json[:_MAX_SIGNALS_BYTES] + '..." (truncated)'
 
         message = (
             "Interpret these pre-computed financial signals:\n"

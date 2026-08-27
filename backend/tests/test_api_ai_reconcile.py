@@ -76,17 +76,22 @@ def reconcile_client(monkeypatch):
     override is needed — that itself is part of the contract.
     """
     import app.api.ai as ai_module
+    from app.core.cache import reconciliation_cache, signal_cache
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     saved = ai_module._agent
     ai_module._agent = None
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
     with TestClient(app) as test_client:
         yield test_client
     ai_module.reset_ai_agent()
     ai_module._agent = saved
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
 
 
 DEFAULT_BODY = {"source": "synthetic", "seed": 42, "size": 100}
@@ -351,3 +356,189 @@ class TestContractAndSecurity:
             payload.pop("throughput_records_per_second")
             payload.pop("answer")  # stub is deterministic anyway
         assert first == second
+
+
+class TestNarrativeReceivesDeterministicSignals:
+    """Verify that the AI narrative layer receives and preserves exact
+    deterministic values from the reconciliation engine — no recalculation,
+    no invention, no omission."""
+
+    def test_signals_contain_all_required_reconciliation_values(
+        self, reconcile_client
+    ):
+        """The signals dict passed to the LLM must include every key the
+        prompt references: total_records, matched_count, exception_count,
+        match_rate, unresolved_count, exception_summary, and
+        sample_exceptions."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY)
+
+        assert len(llm.interpret_calls) == 1
+        signals = llm.interpret_calls[0]["signals"]
+
+        # Core deterministic metrics from the engine
+        data = signals["data"]
+        assert data["total_records"] == DEFAULT_TOTAL
+        assert data["matched_count"] == DEFAULT_MATCHED
+        assert data["exception_count"] == DEFAULT_EXCEPTIONS
+        assert data["unresolved_count"] == DEFAULT_UNRESOLVED
+        assert data["match_rate"] == DEFAULT_MATCH_RATE
+
+        # Dataset identity
+        assert signals["dataset"]["source"] == "synthetic"
+        assert signals["dataset"]["seed"] == 42
+        assert signals["dataset"]["size"] == 100
+
+        # Exception summary with exposure and severity breakdown
+        assert signals["exception_summary"] is not None
+        es = signals["exception_summary"]
+        assert "total_financial_exposure_minor" in es
+        assert "critical_count" in es
+        assert "high_count" in es
+        assert "medium_count" in es
+        assert "low_count" in es
+        assert "top_exception_categories" in es
+
+        # Sample exceptions carry raw minor-unit values only
+        assert isinstance(signals["sample_exceptions"], list)
+        if signals["sample_exceptions"]:
+            for exc in signals["sample_exceptions"]:
+                assert "status" in exc
+                assert "severity" in exc
+                assert "financial_impact_minor" in exc
+
+    def test_signals_do_not_contain_pre_computed_human_readable(
+        self, reconcile_client
+    ):
+        """The signals must NOT contain pre-computed human-readable
+        financial amounts. The LLM should format these from raw minor-unit
+        values per the prompt instructions."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY)
+
+        signals = llm.interpret_calls[0]["signals"]
+
+        # exposure_human_readable must not exist — the LLM formats from raw values
+        assert "exposure_human_readable" not in signals
+
+        # sample exceptions must not have pre-formatted display fields
+        for exc in signals.get("sample_exceptions", []):
+            assert "financial_impact_display" not in exc
+
+    def test_exact_values_match_engine_output(self, reconcile_client):
+        """Every number in the signals must exactly match the deterministic
+        engine output — no rounding, no conversion, no reinterpretation."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        response = reconcile_client.post(
+            "/api/v1/ai/reconcile", json=DEFAULT_BODY
+        ).json()
+
+        signals = llm.interpret_calls[0]["signals"]
+
+        # Core metrics are byte-identical between response and signals
+        assert signals["data"]["total_records"] == response["total_records"]
+        assert signals["data"]["matched_count"] == response["matched_count"]
+        assert signals["data"]["exception_count"] == response["exception_count"]
+        assert signals["data"]["unresolved_count"] == response["unresolved_count"]
+        assert signals["data"]["match_rate"] == response["match_rate"]
+
+        # Exception summary exposure matches
+        if response.get("exception_summary"):
+            assert (
+                signals["exception_summary"]["total_financial_exposure_minor"]
+                == response["exception_summary"]["total_financial_exposure_minor"]
+            )
+            assert (
+                signals["exception_summary"]["critical_count"]
+                == response["exception_summary"]["critical_count"]
+            )
+            assert (
+                signals["exception_summary"]["high_count"]
+                == response["exception_summary"]["high_count"]
+            )
+            assert (
+                signals["exception_summary"]["medium_count"]
+                == response["exception_summary"]["medium_count"]
+            )
+            assert (
+                signals["exception_summary"]["low_count"]
+                == response["exception_summary"]["low_count"]
+            )
+
+    def test_narrative_uses_exact_values_not_invented_numbers(
+        self, reconcile_client
+    ):
+        """The LLM explanation must reference values that exist in the
+        signals — it must not introduce counts, percentages, or monetary
+        amounts that are not in the supplied data."""
+        explanation = (
+            f"Match rate is {DEFAULT_MATCH_RATE}% across {DEFAULT_TOTAL} records. "
+            f"{DEFAULT_EXCEPTIONS} exceptions were found, with {DEFAULT_UNRESOLVED} "
+            f"unresolved. The finance team should review critical and high severity items."
+        )
+        llm = StubLLM(explanation=explanation)
+        install_agent(llm)
+
+        response = reconcile_client.post(
+            "/api/v1/ai/reconcile", json=DEFAULT_BODY
+        ).json()
+
+        assert response["answer"] is not None
+        # The narrative must contain the exact match rate and total records
+        assert str(DEFAULT_MATCH_RATE) in response["answer"]
+        assert str(DEFAULT_TOTAL) in response["answer"]
+        assert str(DEFAULT_EXCEPTIONS) in response["answer"]
+        assert str(DEFAULT_UNRESOLVED) in response["answer"]
+
+    def test_question_forwarded_without_altering_signals(
+        self, reconcile_client
+    ):
+        """A custom focus question must not alter the deterministic
+        values in the signals."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        reconcile_client.post(
+            "/api/v1/ai/reconcile",
+            json={
+                **DEFAULT_BODY,
+                "question": "Which critical exceptions need immediate attention?",
+            },
+        )
+
+        signals = llm.interpret_calls[0]["signals"]
+        assert signals["data"]["total_records"] == DEFAULT_TOTAL
+        assert signals["data"]["matched_count"] == DEFAULT_MATCHED
+        assert signals["data"]["exception_count"] == DEFAULT_EXCEPTIONS
+        assert signals["data"]["match_rate"] == DEFAULT_MATCH_RATE
+
+    def test_no_exposure_human_readable_in_any_signals_payload(
+        self, reconcile_client
+    ):
+        """Verify that no pre-computed human-readable financial amount
+        leaks into the signals regardless of batch configuration."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        reconcile_client.post(
+            "/api/v1/ai/reconcile",
+            json={"source": "synthetic", "seed": 99, "size": 50},
+        )
+
+        signals = llm.interpret_calls[0]["signals"]
+
+        # Deep scan: no value in the signals should be a pre-formatted
+        # currency string like "INR 1,234.56"
+        import re
+        currency_pattern = re.compile(r"[A-Z]{3}\s[\d,]+\.\d{2}")
+        signals_json = json.dumps(signals)
+        assert not currency_pattern.search(signals_json), (
+            "Signals contain pre-formatted currency strings; all financial "
+            "values must be raw minor-unit integers"
+        )

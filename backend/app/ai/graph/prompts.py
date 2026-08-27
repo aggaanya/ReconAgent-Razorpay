@@ -28,15 +28,51 @@ logger = logging.getLogger(__name__)
 
 
 def tool_catalog() -> list[dict[str, Any]]:
-    """Registry-derived catalog: name, description, argument JSON schema."""
-    return [
-        {
+    """Registry-derived catalog: name, description, argument JSON schema.
+
+    Compact format: only includes required fields, key optional fields,
+    and fields with non-trivial defaults to minimize prompt tokens.
+    """
+    # Fields that are always included even if optional (they have meaningful
+    # defaults or are commonly used).
+    _KEY_OPTIONAL_FIELDS = frozenset({
+        "period", "start_date", "end_date", "metric", "currency",
+        "source", "seed", "size", "max_settlement_delay_days",
+    })
+    catalog = []
+    for tool in ALL_FINANCE_TOOLS:
+        schema = tool.input_model.model_json_schema()
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        compact_props = {}
+        # Include required fields.
+        for prop_name in required:
+            prop_schema = props.get(prop_name, {})
+            compact_props[prop_name] = {
+                "type": prop_schema.get("type", "any"),
+            }
+            if "enum" in prop_schema:
+                compact_props[prop_name]["enum"] = prop_schema["enum"]
+            if "default" in prop_schema:
+                compact_props[prop_name]["default"] = prop_schema["default"]
+        # Include key optional fields if present in this tool's schema.
+        for opt_name in _KEY_OPTIONAL_FIELDS:
+            if opt_name in props and opt_name not in compact_props:
+                prop_schema = props[opt_name]
+                compact_props[opt_name] = {
+                    "type": prop_schema.get("type", "any"),
+                    "optional": True,
+                }
+                if "enum" in prop_schema:
+                    compact_props[opt_name]["enum"] = prop_schema["enum"]
+                if "default" in prop_schema:
+                    compact_props[opt_name]["default"] = prop_schema["default"]
+        catalog.append({
             "name": tool.name,
             "description": tool.description,
-            "arguments_schema": tool.input_model.model_json_schema(),
-        }
-        for tool in ALL_FINANCE_TOOLS
-    ]
+            "arguments": compact_props,
+        })
+    return catalog
 
 
 PLANNER_SYSTEM_PROMPT = (
@@ -112,6 +148,11 @@ INTERPRETATION_SYSTEM_PROMPT = (
     "customer behavior claims that are not supported by the signals. "
     "Causes may only be raised as hypotheses tied to detected signals, "
     "never stated as facts.\n"
+    "- Never recalculate, reinterpret, or convert any financial number. "
+    "Use the exact values from the signals as-is. If a value is in "
+    "minor units, present it in minor units and note the currency.\n"
+    "- Do not mention any number that is not present in the supplied "
+    "signals.\n"
     "\n"
     "RECONCILIATION-SPECIFIC RULES:\n"
     "- When explaining reconciliation results, distinguish clearly between "
@@ -120,15 +161,19 @@ INTERPRETATION_SYSTEM_PROMPT = (
     "matching rules classified as MATCHED. It does NOT measure accuracy "
     "against ground truth. Never state or imply that the match rate "
     "equals accuracy.\n"
+    "- The signals supply: total_records, matched_count, exception_count, "
+    "match_rate, unresolved_count, exception_summary (total_financial_exposure_minor, "
+    "critical_count, high_count, medium_count, low_count, and per-severity exposures), "
+    "and sample_exceptions. Use these exact values verbatim. Do not recalculate "
+    "any of them.\n"
     "- If the data includes an 'exception_summary', use it to describe "
     "total financial exposure, severity breakdown (critical/high/medium/low "
     "counts), and top exception categories.\n"
-    "- Financial amounts may appear in minor units (e.g. INR paise). "
-    "When a currency field is present, express amounts in human-readable "
-    "form: divide minor units by 100 and prefix with the currency symbol "
-    "(e.g. 16065382 minor units with currency INR = Rs.1,60,653.82). "
-    "Always show both the raw minor-unit value and the human-readable "
-    "amount for clarity.\n"
+    "- Financial amounts appear in minor units (e.g. INR paise). When a "
+    "currency field is present, you may express amounts in human-readable "
+    "form by dividing minor units by 100 and prefixing with the currency "
+    "symbol (e.g. 16065382 minor units with currency INR = Rs.1,60,653.82). "
+    "Always cite the original minor-unit value from the signals first.\n"
     "- Mention unresolved records and their implications for the finance "
     "team.\n"
     "- Recommend specific human review actions for high-severity "
@@ -142,14 +187,23 @@ INTERPRETATION_SYSTEM_PROMPT = (
 RECONCILIATION_EXPLAIN_SYSTEM_PROMPT = (
     "You are an AI finance assistant explaining deterministic reconciliation results.\n"
     "Hard rules:\n"
-    "1. All numbers in the signals are authoritative — never recalculate or invent figures.\n"
-    "2. Distinguish match rate from accuracy: match rate is the % of records classified as "
+    "1. All numbers in the signals are authoritative — never recalculate, reinterpret, "
+    "convert, or invent figures. Use the exact values supplied.\n"
+    "2. Do not mention any number that is not present in the supplied signals.\n"
+    "3. The signals supply these exact values: total_records, matched_count, "
+    "exception_count, match_rate, unresolved_count, exception_summary "
+    "(total_financial_exposure_minor, critical_count, high_count, medium_count, "
+    "low_count, critical_exposure_minor, high_exposure_minor, medium_exposure_minor, "
+    "low_exposure_minor, top_exception_categories), and sample_exceptions. "
+    "Use them verbatim.\n"
+    "4. Distinguish match rate from accuracy: match rate is the % of records classified as "
     "MATCHED by deterministic rules; it does NOT measure accuracy vs ground truth.\n"
-    "3. Express monetary amounts in human-readable form (divide minor units by 100, "
-    "prefix with currency, e.g. INR 16065382 = Rs.1,60,653.82).\n"
-    "4. Separate FACTS from INTERPRETATION and POSSIBLE EXPLANATIONS.\n"
-    "5. Present exception categories by descending impact.\n"
-    "6. Never claim match rate equals accuracy without ground truth.\n"
+    "5. Financial amounts appear in minor units. You may express them in human-readable "
+    "form (divide by 100, prefix with currency, e.g. INR 16065382 = Rs.1,60,653.82) "
+    "but always cite the original minor-unit value first.\n"
+    "6. Separate FACTS from INTERPRETATION and POSSIBLE EXPLANATIONS.\n"
+    "7. Present exception categories by descending impact.\n"
+    "8. Never claim match rate equals accuracy without ground truth.\n"
     "\n"
     "Output format — follow this structure exactly:\n"
     "1. Match rate — state the percentage and clarify it is NOT accuracy.\n"

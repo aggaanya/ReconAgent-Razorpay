@@ -11,18 +11,43 @@ const AI_CHAT_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_CHAT_TIMEOUT_MS,
 ) || 270_000
 
+/**
+ * In-flight request deduplication map.
+ * Prevents duplicate API calls when the same endpoint is requested
+ * concurrently (e.g., React re-renders, rapid button clicks).
+ * Keys are "METHOD:path:bodyHash" and values are Promises.
+ * @type {Map<string, Promise<any>>}
+ */
+const inflight = new Map()
+
 async function request(path, options = {}, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const method = options.method || 'GET'
+  // Build a deduplication key from method + path + body.
+  const bodyStr = options.body ? String(options.body) : ''
+  const dedupeKey = `${method}:${path}:${bodyStr}`
+
+  // If an identical request is already in-flight, return the same Promise.
+  if (inflight.has(dedupeKey)) {
+    return inflight.get(dedupeKey)
+  }
+
+  const promise = fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(timeoutMs),
     ...options,
   })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`API responded with status ${response.status}`)
+      }
+      return response.json()
+    })
+    .finally(() => {
+      inflight.delete(dedupeKey)
+    })
 
-  if (!response.ok) {
-    throw new Error(`API responded with status ${response.status}`)
-  }
-
-  return response.json()
+  inflight.set(dedupeKey, promise)
+  return promise
 }
 
 /**

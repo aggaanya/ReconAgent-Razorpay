@@ -30,6 +30,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 DEFAULT_HF_BASE_URL = "https://api-inference.huggingface.co/v1"
 DEFAULT_HF_MODEL = "google/gemma-2-2b-it"
 
+# Google Gemini API defaults (OpenAI-compatible endpoint)
+DEFAULT_GEMINI_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/openai"
+)
+DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
+
 
 Environment = Literal["development", "test", "production"]
 
@@ -128,6 +134,30 @@ class Settings(BaseSettings):
     hf_model: str | None = None
 
     hf_base_url: str | None = None
+
+    # ------------------------------------------------------------------
+    # DeepSeek API (convenience aliases)
+    # ------------------------------------------------------------------
+    # When set, these are mapped to the LLM_* fields above.  DeepSeek
+    # takes priority over HF when both are specified.
+
+    deepseek_api_key: SecretStr | None = None
+
+    deepseek_base_url: str | None = None
+
+    deepseek_model: str | None = None
+
+    # ------------------------------------------------------------------
+    # Google Gemini API (convenience aliases)
+    # ------------------------------------------------------------------
+    # When set, these are mapped to the LLM_* fields above.  Gemini
+    # takes priority over HF when both are specified.
+
+    gemini_api_key: SecretStr | None = None
+
+    gemini_model: str | None = None
+
+    gemini_base_url: str | None = None
 
     # ------------------------------------------------------------------
     # Validators
@@ -332,26 +362,174 @@ class Settings(BaseSettings):
 
         return normalized
 
-    @model_validator(mode="after")
-    def _resolve_hf_to_llm(self) -> "Settings":
-        """Map Hugging Face env vars to the LLM fields the rest of the app uses.
+    @field_validator("deepseek_api_key", mode="before")
+    @classmethod
+    def _blank_deepseek_api_key_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank DeepSeek API keys as unset."""
 
-        HF_* are convenience aliases.  LLM_* always wins when both are set,
-        so Ollama / custom-provider configurations are never overridden.
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("deepseek_model", mode="before")
+    @classmethod
+    def _blank_deepseek_model_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank DeepSeek model names as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("deepseek_base_url", mode="before")
+    @classmethod
+    def _validate_deepseek_base_url(
+        cls,
+        value: object,
+    ) -> object:
+        """Validate the DeepSeek API endpoint URL.
+
+        Rules:
+
+        1. Empty values are treated as unset.
+        2. HTTPS is required.
+        3. Trailing slashes are removed.
         """
-        updates: dict[str, object] = {}
 
+        if value is None:
+            return None
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().rstrip("/")
+
+        parsed = urlparse(normalized)
+
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                "DEEPSEEK_BASE_URL must be an absolute URL"
+            )
+
+        if parsed.scheme != "https":
+            raise ValueError(
+                "DEEPSEEK_BASE_URL must use HTTPS"
+            )
+
+        return normalized
+
+    @field_validator("gemini_api_key", mode="before")
+    @classmethod
+    def _blank_gemini_api_key_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank Gemini API keys as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("gemini_model", mode="before")
+    @classmethod
+    def _blank_gemini_model_is_unset(
+        cls,
+        value: object,
+    ) -> object:
+        """Treat blank Gemini model names as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("gemini_base_url", mode="before")
+    @classmethod
+    def _validate_gemini_base_url(
+        cls,
+        value: object,
+    ) -> object:
+        """Validate the Google Gemini API endpoint URL.
+
+        Rules:
+
+        1. Empty values are treated as unset.
+        2. HTTPS is required (remote endpoint).
+        3. Trailing slashes are removed.
+        """
+
+        if value is None:
+            return None
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().rstrip("/")
+
+        parsed = urlparse(normalized)
+
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                "GEMINI_BASE_URL must be an absolute URL"
+            )
+
+        if parsed.scheme != "https":
+            raise ValueError(
+                "GEMINI_BASE_URL must use HTTPS"
+            )
+
+        return normalized
+
+    @model_validator(mode="after")
+    def _resolve_providers_to_llm(self) -> "Settings":
+        """Map provider-specific env vars to the LLM fields.
+
+        Priority: LLM_* > Gemini > DeepSeek > HF > defaults.
+        LLM_* always wins when both are explicitly set.
+        """
+        # Gemini takes priority over other aliases
+        if self.gemini_api_key is not None and self.llm_api_key is None:
+            object.__setattr__(self, "llm_api_key", self.gemini_api_key)
+
+        if self.gemini_model is not None and self.llm_model == DEFAULT_LLM_MODEL:
+            object.__setattr__(self, "llm_model", self.gemini_model)
+
+        if self.gemini_base_url is not None and self.llm_base_url is None:
+            object.__setattr__(self, "llm_base_url", self.gemini_base_url)
+
+        # DeepSeek — second priority after Gemini
+        if self.deepseek_api_key is not None and self.llm_api_key is None:
+            object.__setattr__(self, "llm_api_key", self.deepseek_api_key)
+
+        if self.deepseek_model is not None and self.llm_model == DEFAULT_LLM_MODEL:
+            object.__setattr__(self, "llm_model", self.deepseek_model)
+
+        if self.deepseek_base_url is not None and self.llm_base_url is None:
+            object.__setattr__(self, "llm_base_url", self.deepseek_base_url)
+
+        # HF fallback when Gemini/DeepSeek are not configured
         if self.hf_token is not None and self.llm_api_key is None:
-            updates["llm_api_key"] = self.hf_token
+            object.__setattr__(self, "llm_api_key", self.hf_token)
 
         if self.hf_model is not None and self.llm_model == DEFAULT_LLM_MODEL:
-            updates["llm_model"] = self.hf_model
+            object.__setattr__(self, "llm_model", self.hf_model)
 
         if self.hf_base_url is not None and self.llm_base_url is None:
-            updates["llm_base_url"] = self.hf_base_url
-
-        if updates:
-            return self.model_copy(update=updates)
+            object.__setattr__(self, "llm_base_url", self.hf_base_url)
 
         return self
 

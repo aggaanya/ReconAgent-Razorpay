@@ -39,16 +39,37 @@ from app.ai.graph.prompts import (
 from app.ai.graph.state import DB_SESSION_CONFIG_KEY, MAX_TOOLS_PER_QUESTION
 from app.ai.llm import LLMError, LLMService
 from app.ai.tools import FINANCE_TOOLS, FinanceToolError, get_finance_tool
+from app.core.cache import signal_cache, signal_analysis_cache_key
 from app.core.periods import REPORTING_TIMEZONE
 from app.services.signal_analysis import SignalAnalyzer
 
 
 logger = logging.getLogger(__name__)
 
-
 STATUS_COMPLETED = "completed"
 STATUS_PARTIAL = "partial"
 STATUS_FAILED = "failed"
+
+# Maximum total bytes of tool results sent to the LLM for interpretation.
+# Keeps prompts bounded while preserving the key financial summaries.
+_MAX_TOOL_RESULTS_BYTES = 8_000
+
+# Maximum bytes per individual tool result envelope.
+_MAX_SINGLE_TOOL_RESULT_BYTES = 4_000
+
+
+# ---------------------------------------------------------------------------
+# Signal analysis cache helpers
+# ---------------------------------------------------------------------------
+
+def signal_cache_get(key: str) -> list[dict[str, Any]] | None:
+    """Retrieve cached signal analysis results."""
+    return signal_cache.get(key)
+
+
+def signal_cache_set(key: str, value: list[dict[str, Any]]) -> None:
+    """Store signal analysis results in cache."""
+    signal_cache.set(key, value)
 
 
 # ---------------------------------------------------------------------------
@@ -185,11 +206,25 @@ def _keyword_plan(question: str) -> list[dict[str, Any]]:
 # Planner validation
 # ---------------------------------------------------------------------------
 
+
+def _arg_depth(obj: Any, current: int = 0) -> int:
+    """Return the maximum nesting depth of a dict/list structure."""
+    if current > 10:
+        return current  # safety limit
+    if isinstance(obj, dict):
+        return max((_arg_depth(v, current + 1) for v in obj.values()), default=current)
+    if isinstance(obj, (list, tuple)):
+        return max((_arg_depth(v, current + 1) for v in obj), default=current)
+    return current
+
+
 def _sanitize_llm_selection(payload: Any) -> list[dict[str, Any]]:
     """Validate an LLM-generated tool plan against the registered tools.
 
     The LLM is never trusted to create tools or execute arbitrary functions.
-    Only tools present in FINANCE_TOOLS are accepted.
+    Only tools present in FINANCE_TOOLS are accepted. Arguments are bounded
+    in size and depth to prevent prompt-injection payloads from reaching
+    the tool layer.
     """
 
     if not isinstance(payload, dict):
@@ -203,7 +238,22 @@ def _sanitize_llm_selection(payload: Any) -> list[dict[str, Any]]:
     selections: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    # Maximum number of tools the planner may select.
+    max_tools = MAX_TOOLS_PER_QUESTION
+
+    # Maximum total bytes for all arguments combined.
+    _MAX_TOTAL_ARGS_BYTES = 4_000
+    # Maximum bytes for a single argument value.
+    _MAX_SINGLE_ARG_BYTES = 500
+    # Maximum depth for nested argument dicts.
+    _MAX_ARG_DEPTH = 3
+
+    total_args_bytes = 0
+
     for entry in raw_tools:
+
+        if len(selections) >= max_tools:
+            break
 
         # Be tolerant of:
         # {"tool": "revenue"}
@@ -225,6 +275,61 @@ def _sanitize_llm_selection(payload: Any) -> list[dict[str, Any]]:
         if not isinstance(arguments, dict):
             continue
 
+        # Bound argument payload size.
+        import json as _json
+        try:
+            args_bytes = len(_json.dumps(arguments, default=str).encode("utf-8"))
+        except (TypeError, ValueError):
+            continue
+
+        if args_bytes > _MAX_SINGLE_ARG_BYTES:
+            logger.warning(
+                "Planner arguments for %r too large (%d bytes); dropping",
+                name,
+                args_bytes,
+            )
+            continue
+
+        if total_args_bytes + args_bytes > _MAX_TOTAL_ARGS_BYTES:
+            logger.warning(
+                "Total planner argument budget exceeded; stopping"
+            )
+            break
+
+        # Sanitize string argument values (length + content).
+        sanitized_args = {}
+        for k, v in arguments.items():
+            if isinstance(v, str):
+                # Truncate long strings.
+                v = v[:200]
+                # Block obvious injection patterns in tool arguments.
+                if any(pattern in v.lower() for pattern in (
+                    "ignore previous", "ignore above", "system prompt",
+                    "you are now", "disregard", "new instructions",
+                )):
+                    logger.warning(
+                        "Suspicious argument value in %r.%s; dropping arg",
+                        name,
+                        k,
+                    )
+                    continue
+            elif isinstance(v, (int, float)):
+                pass  # numeric args are safe
+            elif isinstance(v, bool):
+                pass
+            elif v is None:
+                pass
+            elif isinstance(v, dict):
+                # Bound nested dict depth.
+                if _arg_depth(v) > _MAX_ARG_DEPTH:
+                    logger.warning(
+                        "Argument %s.%s too deep; dropping", name, k
+                    )
+                    continue
+            else:
+                continue  # drop unexpected types
+            sanitized_args[k] = v
+
         if name not in FINANCE_TOOLS:
             logger.warning(
                 "Planner proposed unregistered tool %r; dropped",
@@ -236,16 +341,14 @@ def _sanitize_llm_selection(payload: Any) -> list[dict[str, Any]]:
             continue
 
         seen.add(name)
+        total_args_bytes += args_bytes
 
         selections.append(
             {
                 "tool": name,
-                "arguments": arguments,
+                "arguments": sanitized_args,
             }
         )
-
-        if len(selections) >= MAX_TOOLS_PER_QUESTION:
-            break
 
     return selections
 
@@ -615,14 +718,24 @@ def analyze_signals_node(
         Typed/serialized financial signals.
 
     If signal analysis fails, raw financial data is preserved.
+
+    Results are cached: identical tool envelopes produce the same
+    signals deterministically, so caching is safe.
     """
+
+    tool_results = state.get("tool_results", {})
+
+    # Check signal cache first.
+    cache_key = signal_analysis_cache_key(tool_results)
+    cached_signals = signal_cache_get(cache_key)
+    if cached_signals is not None:
+        logger.info("Signal analysis cache hit")
+        return {"financial_signals": cached_signals}
 
     analyzer = SignalAnalyzer()
 
     try:
-        detected = analyzer.analyze(
-            state.get("tool_results", {})
-        )
+        detected = analyzer.analyze(tool_results)
 
     except Exception:
 
@@ -638,17 +751,87 @@ def analyze_signals_node(
             ],
         }
 
+    signals_json = [
+        signal.model_dump(mode="json")
+        for signal in detected
+    ]
+
+    # Cache the result for identical tool envelopes.
+    signal_cache_set(cache_key, signals_json)
+
     logger.info(
         "Signal analysis produced %d signal(s)",
         len(detected),
     )
 
     return {
-        "financial_signals": [
-            signal.model_dump(mode="json")
-            for signal in detected
-        ]
+        "financial_signals": signals_json
     }
+
+
+# ---------------------------------------------------------------------------
+# Tool result bounding for LLM prompts
+# ---------------------------------------------------------------------------
+
+
+def _bound_tool_results_for_llm(
+    tool_results: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Truncate tool results to keep LLM prompts bounded.
+
+    Each tool envelope is independently size-checked. Envelopes that
+    exceed the per-tool limit are truncated to a summary containing only
+    the ``data`` top-level keys (the financial facts) without nested
+    detail. Total size across all tools is also bounded.
+    """
+    import json as _json
+
+    bounded: dict[str, dict[str, Any]] = {}
+    total_bytes = 0
+
+    for name, envelope in tool_results.items():
+        envelope_bytes = len(_json.dumps(envelope, default=str).encode("utf-8"))
+
+        if envelope_bytes <= _MAX_SINGLE_TOOL_RESULT_BYTES:
+            if total_bytes + envelope_bytes <= _MAX_TOOL_RESULTS_BYTES:
+                bounded[name] = envelope
+                total_bytes += envelope_bytes
+            else:
+                # Would exceed total budget — send a truncated summary.
+                bounded[name] = _truncate_envelope(envelope)
+                total_bytes = _MAX_TOOL_RESULTS_BYTES
+        else:
+            # Individual envelope too large — truncate it.
+            bounded[name] = _truncate_envelope(envelope)
+            total_bytes = _MAX_TOOL_RESULTS_BYTES
+
+    return bounded
+
+
+def _truncate_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the top-level structure and data keys of a tool envelope.
+
+    Removes detailed nested lists (transactions, line items, per-currency
+    breakdowns) that can be very large, while preserving the summary
+    fields the LLM needs to narrate.
+    """
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return {"tool": envelope.get("tool"), "data": " truncated"}
+
+    # Keep top-level scalar data fields; drop nested lists/dicts > 200 chars.
+    compact_data: dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, (list, dict)):
+            # Summarize large collections.
+            if isinstance(value, list):
+                compact_data[key] = f"[{len(value)} items]"
+            else:
+                compact_data[key] = f"{{keys: {list(value.keys())[:10]}}}"
+        else:
+            compact_data[key] = value
+
+    return {"tool": envelope.get("tool"), "data": compact_data}
 
 
 # ---------------------------------------------------------------------------
@@ -712,10 +895,13 @@ def make_interpret_node(llm_service: LLMService):
 
         # ---------------------------------------------------------------
         # Build a clean structured payload for the LLM.
+        # Bound tool results to keep prompts within token limits.
         # ---------------------------------------------------------------
 
+        bounded_results = _bound_tool_results_for_llm(results)
+
         signals: dict[str, Any] = {
-            "data": results,
+            "data": bounded_results,
             "detected_signals": detected_signals,
         }
 

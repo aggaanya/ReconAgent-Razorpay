@@ -6,10 +6,21 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.cache import reconciliation_cache, signal_cache
 from app.core.config import get_settings
 from app.db.base import Base
 import app.db.models  # noqa: F401  (register models on the metadata)
 from app.main import app as fastapi_app
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    """Ensure every test starts with empty caches to avoid cross-test pollution."""
+    reconciliation_cache.clear()
+    signal_cache.clear()
+    yield
+    reconciliation_cache.clear()
+    signal_cache.clear()
 
 
 @pytest.fixture
@@ -20,10 +31,20 @@ def client(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "")
     monkeypatch.setenv("HF_MODEL", "")
     monkeypatch.setenv("HF_BASE_URL", "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_BASE_URL", "")
+    monkeypatch.setenv("GEMINI_MODEL", "")
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
     with TestClient(fastapi_app) as test_client:
         yield test_client
     get_settings.cache_clear()
+    reconciliation_cache.clear()
+    signal_cache.clear()
 
 
 @pytest.fixture
