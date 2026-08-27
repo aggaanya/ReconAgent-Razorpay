@@ -7,7 +7,7 @@ and stateless between runs.
 """
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
@@ -31,13 +31,21 @@ ANALYZE_NODE = "analyze_signals"
 INTERPRET_NODE = "interpret"
 
 
-def build_finance_graph(llm_service: LLMService):
+def build_finance_graph(
+    llm_service: LLMService,
+    token_callback: Callable[[str], None] | None = None,
+):
     """Compile the finance intelligence graph for one LLM service."""
     builder = StateGraph(FinanceGraphState)
     builder.add_node(PLAN_NODE, make_plan_node(llm_service))
     builder.add_node(EXECUTE_NODE, execute_tools_node)
     builder.add_node(ANALYZE_NODE, analyze_signals_node)
-    builder.add_node(INTERPRET_NODE, make_interpret_node(llm_service))
+    interpret_node = (
+        make_interpret_node(llm_service)
+        if token_callback is None
+        else make_interpret_node(llm_service, token_callback=token_callback)
+    )
+    builder.add_node(INTERPRET_NODE, interpret_node)
 
     builder.add_edge(START, PLAN_NODE)
     builder.add_edge(PLAN_NODE, EXECUTE_NODE)

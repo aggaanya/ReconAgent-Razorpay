@@ -14,7 +14,7 @@ export default function WhatChangedPanel() {
       const data = await postReconcileCompare({
         previous_seed: 41,
         current_seed: 42,
-        explain: true,
+        explain: false,
       })
       setCompareResult(data)
     } catch (err) {
@@ -69,11 +69,10 @@ export default function WhatChangedPanel() {
                   {drift.previous_match_rate != null ? `${drift.previous_match_rate}%` : '—'} → {drift.current_match_rate != null ? `${drift.current_match_rate}%` : '—'}
                 </span>
                 <span
-                  className={`text-sm font-bold ${
-                    (drift.match_rate_change_pp ?? 0) >= 0
+                  className={`text-sm font-bold ${(drift.match_rate_change_pp ?? 0) >= 0
                       ? 'text-emerald-600'
                       : 'text-red-600'
-                  }`}
+                    }`}
                 >
                   {(drift.match_rate_change_pp ?? 0) >= 0 ? '+' : ''}
                   {drift.match_rate_change_pp}%
@@ -90,11 +89,10 @@ export default function WhatChangedPanel() {
                   {drift.previous_exception_count} → {drift.current_exception_count}
                 </span>
                 <span
-                  className={`text-sm font-bold ${
-                    drift.exception_count_change <= 0
+                  className={`text-sm font-bold ${drift.exception_count_change <= 0
                       ? 'text-emerald-600'
                       : 'text-red-600'
-                  }`}
+                    }`}
                 >
                   {drift.exception_count_change >= 0 ? '+' : ''}
                   {drift.exception_count_change}
@@ -111,11 +109,10 @@ export default function WhatChangedPanel() {
                   {formatCompactMinor(drift.previous_financial_exposure_minor)} → {formatCompactMinor(drift.current_financial_exposure_minor)}
                 </span>
                 <span
-                  className={`text-sm font-bold ${
-                    drift.financial_exposure_change_minor <= 0
+                  className={`text-sm font-bold ${drift.financial_exposure_change_minor <= 0
                       ? 'text-emerald-600'
                       : 'text-red-600'
-                  }`}
+                    }`}
                 >
                   {drift.financial_exposure_change_minor >= 0 ? '+' : ''}
                   {formatMinor(drift.financial_exposure_change_minor)}

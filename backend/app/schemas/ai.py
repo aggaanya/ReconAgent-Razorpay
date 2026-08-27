@@ -26,8 +26,6 @@ from app.schemas.reconciliation import (
 MAX_QUESTION_LENGTH = 1000
 
 
-
-
 class AiChatRequest(BaseModel):
     """One natural-language finance question."""
 
@@ -160,18 +158,24 @@ class AiReconcileCompareRequest(BaseModel):
     """Request for What-Changed comparison between two reconciliation runs."""
 
     previous_seed: int = Field(default=41, ge=0, description="Previous run seed")
-    previous_size: int = Field(default=100, ge=50, le=5000, description="Previous batch size")
+    previous_size: int = Field(
+        default=100, ge=50, le=5000, description="Previous batch size"
+    )
     current_seed: int = Field(default=42, ge=0, description="Current run seed")
-    current_size: int = Field(default=100, ge=50, le=5000, description="Current batch size")
-    explain: bool = Field(default=True, description="Attach LLM drift explanation")
+    current_size: int = Field(
+        default=100, ge=50, le=5000, description="Current batch size"
+    )
+    explain: bool = Field(
+        default=False,
+        description="Optionally attach an LLM drift explanation",
+    )
 
 
 class AiReconcileCompareResponse(BaseModel):
-    """Deterministic comparison between two runs plus optional LLM narrative."""
+    """Deterministic comparison plus an optional safe narrative rendering."""
 
     drift: ReconciliationDriftAnalysis
     previous_summary: ReconciliationSummary
     current_summary: ReconciliationSummary
     answer: str | None = None
     errors: list[str] = Field(default_factory=list)
-

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.ai.graph import FinanceIntelligenceAgent
 from app.ai.llm import LLMConnectionError
+from app.core.cache import reconciliation_cache
 from app.core.config import Settings, get_settings
 from app.main import app
 from app.schemas.reconciliation import ReconciliationStatus
@@ -49,9 +50,7 @@ class StubLLM:
         raise AssertionError("reconcile endpoint never plans tools")
 
     def explain_signals(self, signals, *, question=None, system_prompt=None):
-        self.interpret_calls.append(
-            {"signals": signals, "question": question}
-        )
+        self.interpret_calls.append({"signals": signals, "question": question})
         if self.explain_error is not None:
             raise self.explain_error
         from types import SimpleNamespace
@@ -98,6 +97,35 @@ DEFAULT_BODY = {"source": "synthetic", "seed": 42, "size": 100}
 
 
 class TestReconcileEndpointHappyPath:
+    def test_identical_facts_only_requests_use_deterministic_cache(
+        self, reconcile_client, monkeypatch
+    ):
+        import app.api.ai as ai_module
+
+        reconciliation_cache.clear()
+        calls = 0
+        original_run = ai_module.RECONCILE_TRANSACTION_TOOL.run
+
+        def counted_run(session, payload):
+            nonlocal calls
+            calls += 1
+            return original_run(session, payload)
+
+        monkeypatch.setattr(ai_module.RECONCILE_TRANSACTION_TOOL, "run", counted_run)
+
+        first = reconcile_client.post(
+            "/api/v1/ai/reconcile",
+            json={**DEFAULT_BODY, "explain": False},
+        )
+        second = reconcile_client.post(
+            "/api/v1/ai/reconcile",
+            json={**DEFAULT_BODY, "explain": False},
+        )
+
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        assert calls == 1
+
     def test_default_batch_returns_exact_engine_metrics(self, reconcile_client):
         client = reconcile_client
         install_agent(StubLLM())  # explain defaults to true
@@ -125,9 +153,7 @@ class TestReconcileEndpointHappyPath:
         client = reconcile_client
         install_agent(StubLLM())
 
-        body = client.post(
-            "/api/v1/ai/reconcile", json=DEFAULT_BODY
-        ).json()
+        body = client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY).json()
 
         exceptions = body["exceptions"]
         assert len(exceptions) == DEFAULT_EXCEPTIONS
@@ -172,9 +198,7 @@ class TestReconcileEndpointHappyPath:
         assert body["answer"] is None
         assert llm.interpret_calls == []  # never consulted
 
-    def test_focus_question_is_forwarded_to_the_narrative_step(
-        self, reconcile_client
-    ):
+    def test_focus_question_is_forwarded_to_the_narrative_step(self, reconcile_client):
         client = reconcile_client
         llm = StubLLM()
         install_agent(llm)
@@ -196,15 +220,11 @@ class TestReconcileEndpointHappyPath:
 
 
 class TestDegradationAndConfig:
-    def test_llm_failure_degrades_to_partial_with_facts_intact(
-        self, reconcile_client
-    ):
+    def test_llm_failure_degrades_to_partial_with_facts_intact(self, reconcile_client):
         client = reconcile_client
         install_agent(StubLLM(explain_error=LLMConnectionError("down")))
 
-        response = client.post(
-            "/api/v1/ai/reconcile", json=DEFAULT_BODY
-        )
+        response = client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY)
 
         assert response.status_code == 200
         body = response.json()
@@ -292,33 +312,27 @@ class TestRequestValidation:
 
     def test_defaults_run_the_canonical_track_04_batch(self, reconcile_client):
         install_agent(StubLLM())
-        body = reconcile_client.post(
-            "/api/v1/ai/reconcile", json={}
-        ).json()
+        body = reconcile_client.post("/api/v1/ai/reconcile", json={}).json()
         assert body["total_records"] == 100
 
 
 class TestContractAndSecurity:
-    def test_openapi_documents_the_route_and_nullable_accuracy(
-        self, reconcile_client
-    ):
+    def test_openapi_documents_the_route_and_nullable_accuracy(self, reconcile_client):
         spec = reconcile_client.get("/openapi.json").json()
         assert "/api/v1/ai/reconcile" in spec["paths"]
-        ref = spec["paths"]["/api/v1/ai/reconcile"]["post"]["requestBody"][
-            "content"
-        ]["application/json"]["schema"]["$ref"]
+        ref = spec["paths"]["/api/v1/ai/reconcile"]["post"]["requestBody"]["content"][
+            "application/json"
+        ]["schema"]["$ref"]
         request_schema = spec["components"]["schemas"][ref.split("/")[-1]]
         assert request_schema.get("required", []) == []
         size_prop = request_schema["properties"]["size"]
         assert size_prop["minimum"] == 50
         assert size_prop["maximum"] == 5000
 
-        response_ref = spec["paths"]["/api/v1/ai/reconcile"]["post"][
-            "responses"
-        ]["200"]["content"]["application/json"]["schema"]["$ref"]
-        response_schema = spec["components"]["schemas"][
-            response_ref.split("/")[-1]
-        ]
+        response_ref = spec["paths"]["/api/v1/ai/reconcile"]["post"]["responses"][
+            "200"
+        ]["content"]["application/json"]["schema"]["$ref"]
+        response_schema = spec["components"]["schemas"][response_ref.split("/")[-1]]
         accuracy_prop = response_schema["properties"]["accuracy"]
         is_nullable = accuracy_prop.get("nullable") is True or any(
             option.get("type") in ("number", "null")
@@ -326,13 +340,9 @@ class TestContractAndSecurity:
         )
         assert is_nullable
 
-    def test_response_never_contains_secrets_or_ground_truth(
-        self, reconcile_client
-    ):
+    def test_response_never_contains_secrets_or_ground_truth(self, reconcile_client):
         install_agent(StubLLM(explanation="Report looks consistent."))
-        response = reconcile_client.post(
-            "/api/v1/ai/reconcile", json=DEFAULT_BODY
-        )
+        response = reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY)
         encoded = json.dumps(response.json()).lower()
         assert response.status_code == 200
         assert "sk-" not in encoded
@@ -341,16 +351,10 @@ class TestContractAndSecurity:
         assert "expected_status" not in encoded
         assert "case_id" not in encoded
 
-    def test_identical_requests_produce_identical_reports(
-        self, reconcile_client
-    ):
+    def test_identical_requests_produce_identical_reports(self, reconcile_client):
         install_agent(StubLLM())
-        first = reconcile_client.post(
-            "/api/v1/ai/reconcile", json=DEFAULT_BODY
-        ).json()
-        second = reconcile_client.post(
-            "/api/v1/ai/reconcile", json=DEFAULT_BODY
-        ).json()
+        first = reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY).json()
+        second = reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY).json()
         for payload in (first, second):
             payload.pop("processing_time_ms")
             payload.pop("throughput_records_per_second")

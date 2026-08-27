@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { postAiChat } from '../api/client.js'
+import { postAiChat, streamAiChat } from '../api/client.js'
 
 const MAX_QUESTION_LENGTH = 1000
 
@@ -24,12 +24,38 @@ export default function useFinanceChat() {
     }
     setIsLoading(true)
     setError(null)
+    setData(null)
+    let receivedToken = false
+    let streamedAnswer = ''
     try {
-      const response = await postAiChat(question)
+      const response = await streamAiChat(question, {
+        onToken: (token) => {
+          receivedToken = true
+          streamedAnswer += token
+          setData((current) => ({
+            ...(current || {}),
+            question,
+            status: 'partial',
+            answer: streamedAnswer,
+          }))
+        },
+      })
       setData(response)
     } catch (err) {
-      setData(null)
-      setError(err instanceof Error ? err.message : String(err))
+      if (!receivedToken) {
+        try {
+          setData(await postAiChat(question))
+        } catch (fallbackError) {
+          setData(null)
+          setError(
+            fallbackError instanceof Error
+              ? fallbackError.message
+              : String(fallbackError),
+          )
+        }
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
       setIsLoading(false)
     }

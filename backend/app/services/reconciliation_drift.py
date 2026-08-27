@@ -108,15 +108,32 @@ def compare_runs(
     major_drivers: list[str] = []
     for cd in sorted_drivers[:3]:
         if cd.count_change != 0 or cd.exposure_change_minor != 0:
-            direction = "increased" if cd.count_change >= 0 else "decreased"
-            exp_dir = "+" if cd.exposure_change_minor >= 0 else ""
+            if cd.count_change > 0:
+                count_text = f"increased from {cd.previous_count} to {cd.current_count}"
+            elif cd.count_change < 0:
+                count_text = f"decreased from {cd.previous_count} to {cd.current_count}"
+            else:
+                count_text = f"remained unchanged at {cd.current_count}"
+
+            if cd.exposure_change_minor > 0:
+                exposure_text = (
+                    f"exposure increased by ₹{cd.exposure_change_minor / 100:,.2f}"
+                )
+            elif cd.exposure_change_minor < 0:
+                exposure_text = (
+                    f"exposure decreased by ₹{abs(cd.exposure_change_minor) / 100:,.2f}"
+                )
+            else:
+                exposure_text = "exposure was unchanged"
+
             major_drivers.append(
-                f"{cd.category} exceptions {direction} from {cd.previous_count} to {cd.current_count} "
-                f"(exposure change: {exp_dir}₹{cd.exposure_change_minor / 100:,.2f})"
+                f"{cd.category} exception count {count_text}; {exposure_text}."
             )
 
     if not major_drivers:
-        major_drivers.append("No significant exception distribution changes detected between the two runs.")
+        major_drivers.append(
+            "No significant exception distribution changes detected between the two runs."
+        )
 
     return ReconciliationDriftAnalysis(
         previous_seed=previous_seed,

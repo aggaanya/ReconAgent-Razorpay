@@ -1,35 +1,24 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
-// Reconciliation explanation makes one LLM call; the chat graph makes two
-// sequential LLM calls (plan + interpret). Keep each timeout greater than
-// the backend's per-attempt LLM timeout multiplied by the number of calls
-// plus HTTP/rendering margin.  Deployments can override at build time.
 const AI_RECONCILIATION_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_RECONCILIATION_TIMEOUT_MS,
 ) || 150_000
 const AI_CHAT_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_CHAT_TIMEOUT_MS,
 ) || 270_000
+const configuredCompareTimeoutMs = Number(
+  import.meta.env.VITE_AI_COMPARE_TIMEOUT_MS,
+)
+const AI_COMPARE_TIMEOUT_MS = Number.isFinite(configuredCompareTimeoutMs) && configuredCompareTimeoutMs > 0
+  ? configuredCompareTimeoutMs
+  : 30_000
 
-/**
- * In-flight request deduplication map.
- * Prevents duplicate API calls when the same endpoint is requested
- * concurrently (e.g., React re-renders, rapid button clicks).
- * Keys are "METHOD:path:bodyHash" and values are Promises.
- * @type {Map<string, Promise<any>>}
- */
 const inflight = new Map()
 
 async function request(path, options = {}, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
   const method = options.method || 'GET'
-  // Build a deduplication key from method + path + body.
-  const bodyStr = options.body ? String(options.body) : ''
-  const dedupeKey = `${method}:${path}:${bodyStr}`
-
-  // If an identical request is already in-flight, return the same Promise.
-  if (inflight.has(dedupeKey)) {
-    return inflight.get(dedupeKey)
-  }
+  const dedupeKey = `${method}:${path}:${options.body || ''}`
+  if (inflight.has(dedupeKey)) return inflight.get(dedupeKey)
 
   const promise = fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
@@ -42,9 +31,7 @@ async function request(path, options = {}, { timeoutMs = DEFAULT_REQUEST_TIMEOUT
       }
       return response.json()
     })
-    .finally(() => {
-      inflight.delete(dedupeKey)
-    })
+    .finally(() => inflight.delete(dedupeKey))
 
   inflight.set(dedupeKey, promise)
   return promise
@@ -248,8 +235,65 @@ export async function postAiChat(question) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
     },
-    { timeoutMs: AI_CHAT_TIMEOUT_MS },
+    // LangGraph planning + tool runs + LLM interpretation can exceed the
+    // default timeout; keep a generous ceiling instead of guessing speed.
+    { timeoutMs: 60000 },
   )
+}
+
+export async function streamAiChat(question, { onToken } = {}) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/ai/chat/stream`, {
+    method: 'POST',
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ question }),
+    signal: AbortSignal.timeout(AI_CHAT_TIMEOUT_MS),
+  })
+
+  if (!response.ok) {
+    throw new Error(`AI chat stream responded with status ${response.status}`)
+  }
+  if (!response.body) {
+    throw new Error('AI chat streaming is unavailable in this browser.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completedResponse = null
+
+  const consumeEvent = (rawEvent) => {
+    const lines = rawEvent.split('\n')
+    const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+    const dataLine = lines.find((line) => line.startsWith('data:'))
+    if (!dataLine) return
+    const payload = JSON.parse(dataLine.slice(5).trim())
+    if (eventName === 'token' && payload.content) onToken?.(payload.content)
+    if (eventName === 'complete') completedResponse = payload.response
+    if (eventName === 'error') throw new Error(payload.message || 'AI chat streaming failed.')
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const events = buffer.split('\n\n')
+      buffer = events.pop() || ''
+      events.forEach(consumeEvent)
+      if (done) break
+    }
+    if (buffer.trim()) consumeEvent(buffer)
+  } catch (error) {
+    await reader.cancel()
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+
+  if (!completedResponse) throw new Error('AI chat stream ended before completion.')
+  return completedResponse
 }
 
 /**
@@ -259,18 +303,22 @@ export async function postAiChat(question) {
  * @returns {Promise<Object>}
  */
 export async function postReconcileCompare(params = {}) {
-  return request('/api/v1/ai/reconcile/compare', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      previous_seed: 41,
-      previous_size: 100,
-      current_seed: 42,
-      current_size: 100,
-      explain: true,
-      ...params,
-    }),
-  })
+  return request(
+    '/api/v1/ai/reconcile/compare',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        previous_seed: 41,
+        previous_size: 100,
+        current_seed: 42,
+        current_size: 100,
+        explain: false,
+        ...params,
+      }),
+    },
+    { timeoutMs: AI_COMPARE_TIMEOUT_MS },
+  )
 }
 
 export function getApiBaseUrl() {

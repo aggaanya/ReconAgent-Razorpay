@@ -64,9 +64,7 @@ class StubLLM:
         self.interpret_calls: list[dict[str, Any]] = []
 
     def complete_json(self, message: str, *, system_prompt: str | None = None):
-        self.planner_calls.append(
-            {"message": message, "system_prompt": system_prompt}
-        )
+        self.planner_calls.append({"message": message, "system_prompt": system_prompt})
         if self.plan_error is not None:
             raise self.plan_error
         return json.loads(json.dumps(self.plan_payload))  # deep copy
@@ -109,8 +107,7 @@ class RecordingTool:
                 self.input_model.model_validate(dict(payload))
             except ValidationError as exc:
                 raise InvalidToolInputError(
-                    f"Invalid input for '{self.name}' "
-                    f"({exc.errors()[0]['msg']})",
+                    f"Invalid input for '{self.name}' " f"({exc.errors()[0]['msg']})",
                     tool=self.name,
                 ) from exc
         return json.loads(json.dumps(self.envelope))
@@ -146,12 +143,8 @@ def stub_tools(monkeypatch):
     }
     # One deliberately failing tool available on demand per test:
     monkeypatch.setattr(tools_registry, "FINANCE_TOOLS", dict(stubs))
-    monkeypatch.setattr(
-        tools_registry, "ALL_FINANCE_TOOLS", tuple(stubs.values())
-    )
-    monkeypatch.setattr(
-        "app.ai.graph.prompts.ALL_FINANCE_TOOLS", tuple(stubs.values())
-    )
+    monkeypatch.setattr(tools_registry, "ALL_FINANCE_TOOLS", tuple(stubs.values()))
+    monkeypatch.setattr("app.ai.graph.prompts.ALL_FINANCE_TOOLS", tuple(stubs.values()))
     return stubs
 
 
@@ -159,9 +152,7 @@ def make_agent(llm: StubLLM) -> FinanceIntelligenceAgent:
     return FinanceIntelligenceAgent(llm)  # type: ignore[arg-type]
 
 
-REVENUE_PLAN = {
-    "tools": [{"tool": "revenue", "arguments": {"period": "this_month"}}]
-}
+REVENUE_PLAN = {"tools": [{"tool": "revenue", "arguments": {"period": "this_month"}}]}
 MULTI_PLAN = {
     "tools": [
         {"tool": "revenue", "arguments": {}},
@@ -266,9 +257,7 @@ class TestSingleToolQuestions:
         assert result.interpretation == llm.explanation
         assert result.errors == []
 
-    def test_planner_receives_catalog_and_interpretation_gets_signals(
-        self, stub_tools
-    ):
+    def test_planner_receives_catalog_and_interpretation_gets_signals(self, stub_tools):
         llm = StubLLM(plan_payload=REVENUE_PLAN)
         make_agent(llm).run(SESSION, "What is my revenue this month?")
         planner_call = llm.planner_calls[0]
@@ -334,9 +323,7 @@ class TestPlannerSafety:
         result = make_agent(llm).run(SESSION, "What is my revenue?")
         assert result.selected_tools == ["revenue"]
         assert stub_tools["revenue"].calls and all(
-            len(t.calls) == 0
-            for n, t in stub_tools.items()
-            if n != "revenue"
+            len(t.calls) == 0 for n, t in stub_tools.items() if n != "revenue"
         )
 
     def test_non_dict_entries_and_arguments_filtered(self, stub_tools):
@@ -367,11 +354,7 @@ class TestPlannerSafety:
         assert result.selected_tools == ["refunds", "trends", "financial_summary"]
         # Fallback plans must be executable: the trend call carries a
         # valid default metric instead of an empty argument dict.
-        trends_call = [
-            c
-            for n, t in stub_tools["trends"].calls
-            for c in [t]
-        ]
+        trends_call = [c for n, t in stub_tools["trends"].calls for c in [t]]
         assert trends_call and trends_call[0] == {"metric": "gross_revenue"}
         assert result.status == STATUS_COMPLETED
 
@@ -410,9 +393,7 @@ class TestArgumentAndToolFailures:
         assert result.status == STATUS_PARTIAL
 
     def test_tool_engine_failure_is_contained(self, stub_tools):
-        boom = FinanceEngineError(
-            "Finance engine failed while running 'settlements'."
-        )
+        boom = FinanceEngineError("Finance engine failed while running 'settlements'.")
         stub_tools["settlements"].error = boom
         plan = {
             "tools": [
@@ -440,15 +421,19 @@ class TestArgumentAndToolFailures:
         assert "hunter2" not in result.tool_errors["revenue"]
         assert "SELECT" not in result.tool_errors["revenue"]
 
-    def test_missing_session_fails_graph_without_executing_tools(
-        self, stub_tools
-    ):
+    def test_missing_session_fails_graph_without_executing_tools(self, stub_tools):
         llm = StubLLM(plan_payload=REVENUE_PLAN)
         result = FinanceIntelligenceAgent(llm)._graph.invoke(
-            {"question": "revenue?",
-             "plan": [], "selection_source": "",
-             "tool_results": {}, "tool_errors": {},
-             "interpretation": None, "status": "failed", "errors": []},
+            {
+                "question": "revenue?",
+                "plan": [],
+                "selection_source": "",
+                "tool_results": {},
+                "tool_errors": {},
+                "interpretation": None,
+                "status": "failed",
+                "errors": [],
+            },
             config={},
         )
         assert any("session" in e.lower() for e in result["errors"])
@@ -481,9 +466,7 @@ class TestInterpretationFailure:
             plan_payload=REVENUE_PLAN,
             explain_error=LLMError("dead"),
         )
-        stub_tools["revenue"].error = InvalidToolInputError(
-            "bad", tool="revenue"
-        )
+        stub_tools["revenue"].error = InvalidToolInputError("bad", tool="revenue")
         result = make_agent(llm).run(SESSION, "revenue?")
         assert result.status == STATUS_PARTIAL  # errors present -> partial
         assert result.interpretation is None
@@ -579,9 +562,7 @@ class TestStateSafety:
     def test_agent_result_round_trips_json(self, stub_tools):
         llm = StubLLM(plan_payload=MULTI_PLAN)
         result = make_agent(llm).run(SESSION, "why did revenue decrease?")
-        decoded = FinanceAgentResult.model_validate_json(
-            result.model_dump_json()
-        )
+        decoded = FinanceAgentResult.model_validate_json(result.model_dump_json())
         assert decoded == result
 
     def test_identical_inputs_produce_identical_structures(self, stub_tools):
@@ -600,7 +581,10 @@ class TestStateSafety:
         assert "TOOL ROUTING RULES" in PLANNER_SYSTEM_PROMPT
         assert "revenue" in PLANNER_SYSTEM_PROMPT
         assert "financial_summary" in PLANNER_SYSTEM_PROMPT
-        assert "Do NOT use 'financial_summary' for revenue-specific questions" in PLANNER_SYSTEM_PROMPT
+        assert (
+            "Do NOT use 'financial_summary' for revenue-specific questions"
+            in PLANNER_SYSTEM_PROMPT
+        )
 
     @pytest.mark.parametrize(
         "question",
@@ -715,9 +699,11 @@ class TestSignalAnalysisIntegration:
         from app.ai.graph.nodes import analyze_signals_node
 
         update = analyze_signals_node(
-            {"tool_results": {
-                "trends": declining_trends_envelope(),
-            }},
+            {
+                "tool_results": {
+                    "trends": declining_trends_envelope(),
+                }
+            },
             config={},
         )
         signals = update["financial_signals"]
