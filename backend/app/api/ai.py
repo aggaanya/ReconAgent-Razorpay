@@ -22,10 +22,12 @@ Conventions:
   those facts and is never authoritative.
 """
 
+import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as OrmSession
 
 from app.ai.graph.prompts import INTERPRETATION_SYSTEM_PROMPT, RECONCILIATION_EXPLAIN_SYSTEM_PROMPT
@@ -107,6 +109,118 @@ def _sanitize_llm_text(text: str | None) -> str | None:
     return sanitized
 
 
+# ---------------------------------------------------------------------------
+# Deterministic drift narration (no LLM)
+# ---------------------------------------------------------------------------
+
+
+def _format_count_statement(previous: int, current: int) -> str:
+    """Format a deterministic count-change statement."""
+    if current > previous:
+        return f"count increased from {previous} to {current}"
+    if current < previous:
+        return f"count decreased from {previous} to {current}"
+    return f"count remained unchanged at {current}"
+
+
+def _format_exposure_statement(change_minor: int) -> str:
+    """Format a deterministic exposure-change statement in INR."""
+    if change_minor > 0:
+        return f"exposure increased by \u20b9{change_minor / 100:,.2f}"
+    if change_minor < 0:
+        return f"exposure decreased by \u20b9{abs(change_minor) / 100:,.2f}"
+    return "exposure was unchanged"
+
+
+def _drift_narration_signals(
+    drift: Any,
+    previous_exception_summary: Any,
+    current_exception_summary: Any,
+) -> dict[str, Any]:
+    """Build deterministic structured facts for drift narration.
+
+    Returns a dict with:
+    - ``categories``: list of per-category narration items
+    - ``severity_levels``: list of per-severity narration items
+    - ``current_total_exposure_display``: human-readable total exposure
+    - ``unresolved_exposure_display``: human-readable unresolved exposure
+    - ``major_drivers``: list of pre-formatted driver strings
+    """
+    categories: list[dict[str, str]] = []
+    for cd in drift.category_drifts:
+        categories.append({
+            "category": cd.category,
+            "count_statement": _format_count_statement(
+                cd.previous_count, cd.current_count
+            ),
+            "exposure_statement": _format_exposure_statement(
+                cd.exposure_change_minor
+            ),
+        })
+
+    severity_levels: list[dict[str, str]] = []
+    for pd in drift.priority_drifts:
+        severity_levels.append({
+            "severity": pd.severity,
+            "count_statement": _format_count_statement(
+                pd.previous_count, pd.current_count
+            ),
+            "exposure_statement": _format_exposure_statement(
+                pd.exposure_change_minor
+            ),
+        })
+
+    curr_exp = drift.current_financial_exposure_minor
+    curr_exp_display = f"\u20b9{curr_exp / 100:,.2f}"
+
+    unresolved_exp = 0
+    if current_exception_summary:
+        unresolved_exp = getattr(
+            current_exception_summary, "largest_unresolved_exposure_minor", 0
+        ) or 0
+    unresolved_display = f"\u20b9{unresolved_exp / 100:,.2f}" if unresolved_exp else "\u20b90.00"
+
+    return {
+        "categories": categories,
+        "severity_levels": severity_levels,
+        "current_total_exposure_display": curr_exp_display,
+        "unresolved_exposure_display": unresolved_display,
+        "major_drivers": list(drift.major_drivers),
+    }
+
+
+def _render_drift_narrative(facts: dict[str, Any]) -> str:
+    """Render deterministic drift facts into a human-readable narrative.
+
+    The output is entirely derived from pre-computed values; no arithmetic
+    or financial calculation is performed here.
+    """
+    parts: list[str] = []
+
+    for item in facts.get("categories", []):
+        parts.append(
+            f"{item['category']}: {item['count_statement']}; "
+            f"{item['exposure_statement']}."
+        )
+
+    if facts.get("severity_levels"):
+        parts.append("Severity breakdown:")
+        for sev in facts["severity_levels"]:
+            parts.append(
+                f"  {sev['severity']}: {sev['count_statement']}; "
+                f"{sev['exposure_statement']}."
+            )
+
+    total_exp = facts.get("current_total_exposure_display", "\u20b90.00")
+    parts.append(f"Total financial exposure: {total_exp}.")
+
+    unresolved = facts.get("unresolved_exposure_display")
+    if unresolved and unresolved != "\u20b90.00":
+        parts.append(f"Unresolved exposure: {unresolved}.")
+
+    return "\n".join(parts)
+
+
 def get_ai_agent() -> FinanceIntelligenceAgent:
     """FastAPI dependency returning the process-wide agent instance."""
     global _agent
@@ -163,6 +277,65 @@ def ai_chat(
     logger.info("AI chat question received (%d chars)", len(payload.question))
     result = agent.run(session, payload.question)
     return _to_response(result)
+
+
+@router.post(
+    "/chat/stream",
+    summary="Stream AI finance chat response as Server-Sent Events",
+    description=(
+        "SSE variant of /chat. Streams token events as they arrive from "
+        "the LLM, followed by a complete event with the full response."
+    ),
+)
+def ai_chat_stream(
+    payload: AiChatRequest,
+    agent: FinanceIntelligenceAgent = Depends(get_ai_agent),
+    session: OrmSession = Depends(get_db),
+) -> StreamingResponse:
+    logger.info("AI chat stream requested (%d chars)", len(payload.question))
+
+    def event_generator():
+        collected_tokens: list[str] = []
+        result = None
+        error_event = None
+
+        try:
+            for kind, data in agent.stream(
+                lambda: iter([session]), payload.question
+            ):
+                if kind == "keepalive":
+                    yield ": keepalive\n\n"
+                elif kind == "token":
+                    collected_tokens.append(str(data))
+                    payload_data = json.dumps({"content": str(data)})
+                    yield f"event: token\ndata: {payload_data}\n\n"
+                elif kind == "result":
+                    result = data
+                elif kind == "error":
+                    error_event = data
+        except Exception:
+            logger.exception("Stream failed unexpectedly")
+            error_event = RuntimeError("AI response generation is unavailable.")
+
+        if error_event is not None:
+            error_payload = json.dumps({"message": "AI response generation is unavailable."})
+            yield f"event: error\ndata: {error_payload}\n\n"
+            return
+
+        if result is not None:
+            response = _to_response(result)
+            complete_payload = json.dumps({"response": response.model_dump()})
+            yield f"event: complete\ndata: {complete_payload}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _reconcile_signals(
@@ -300,11 +473,13 @@ def ai_reconcile(
                 ),
                 question=(
                     payload.question
-                    or "Explain this reconciliation outcome for a business "
-                    "owner. Clarify that match rate is not accuracy. List "
-                    "top exception categories with financial impact, "
-                    "severity counts, unresolved items, and 2-3 recommended "
-                    "actions for critical/high items. Be concise."
+                    or "Summarize this reconciliation outcome in at most 2-3 "
+                    "short sentences for a business user: the match rate in "
+                    "plain terms (for example '58% of records were matched'), "
+                    "the exception with the largest financial impact, and "
+                    "unresolved records only if worth flagging. Mention "
+                    "important numbers only; do not repeat the same fact twice "
+                    "and do not describe system-level details."
                 ),
                 system_prompt=RECONCILIATION_EXPLAIN_SYSTEM_PROMPT,
             )
@@ -418,10 +593,6 @@ def ai_reconcile_evaluation(
 def ai_reconcile_compare(
     payload: AiReconcileCompareRequest,
 ) -> AiReconcileCompareResponse:
-    agent: FinanceIntelligenceAgent | None = None
-    if payload.explain:
-        agent = get_ai_agent()
-
     logger.info(
         "AI reconciliation comparison requested (prev_seed=%d, curr_seed=%d)",
         payload.previous_seed,
@@ -445,14 +616,16 @@ def ai_reconcile_compare(
         seed=payload.previous_seed, size=payload.previous_size
     )
     prev_report = build_report(
-        prev_batch.payments, prev_batch.settlements, prev_batch.refunds
+        prev_batch.payments, prev_batch.settlements, prev_batch.refunds,
+        max_settlement_delay_days=payload.max_settlement_delay_days,
     )
 
     curr_batch = generate_synthetic_batch(
         seed=payload.current_seed, size=payload.current_size
     )
     curr_report = build_report(
-        curr_batch.payments, curr_batch.settlements, curr_batch.refunds
+        curr_batch.payments, curr_batch.settlements, curr_batch.refunds,
+        max_settlement_delay_days=payload.max_settlement_delay_days,
     )
 
     drift = compare_runs(
@@ -465,29 +638,18 @@ def ai_reconcile_compare(
     errors: list[str] = []
     answer: str | None = None
 
-    if agent is not None:
+    if payload.explain:
         try:
-            drift_facts = {
-                "data": {
-                    "drift": drift.model_dump(mode="json"),
-                    "previous_summary": prev_report.summary.model_dump(mode="json"),
-                    "current_summary": curr_report.summary.model_dump(mode="json"),
-                }
-            }
-            reply = agent.llm_service.explain_signals(
-                drift_facts,
-                question=(
-                    "Explain what changed between the previous and current reconciliation runs: "
-                    "what is the match-rate trend, what drove exception/exposure shifts, "
-                    "and what should the finance team focus on?"
-                ),
-                system_prompt=INTERPRETATION_SYSTEM_PROMPT,
+            facts = _drift_narration_signals(
+                drift,
+                prev_report.exception_summary,
+                curr_report.exception_summary,
             )
-            answer = reply.content
-        except LLMError as exc:
-            logger.warning("Drift explanation failed (%s)", type(exc).__name__)
+            answer = _render_drift_narrative(facts)
+        except Exception:
+            logger.exception("Drift narration failed")
             errors.append(
-                "The drift analysis completed, but the narrative explanation is unavailable."
+                "The drift analysis completed, but the narrative explanation failed."
             )
 
     response = AiReconcileCompareResponse(

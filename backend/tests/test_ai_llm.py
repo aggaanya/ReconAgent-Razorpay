@@ -328,6 +328,120 @@ class TestResponseEdgeCases:
 # --- provider error translation -----------------------------------------------
 
 
+class TestMaxTokensAndTruncation:
+    """max_tokens wiring and the finish_reason='length' auto-retry."""
+
+    def test_max_tokens_is_sent_to_provider(self):
+        service, completions = stub_service(
+            lambda _: fake_response(), max_tokens=2048
+        )
+        service.complete("hello")
+        assert completions.calls[0]["max_tokens"] == 2048
+
+    def test_no_max_tokens_omits_the_cap(self):
+        service, completions = stub_service(
+            lambda _: fake_response(), max_tokens=None
+        )
+        service.complete("hello")
+        assert "max_tokens" not in completions.calls[0]
+
+    def test_from_settings_wires_max_tokens(self, monkeypatch):
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        import openai as _openai
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(_openai, "OpenAI", FakeOpenAI)
+        settings = make_settings(
+            llm_api_key="sk-test",
+            llm_model="gpt-custom",
+            llm_max_tokens=2048,
+        )
+        service = LLMService.from_settings(settings)
+        try:
+            assert service._max_tokens == 2048
+        finally:
+            service.close()
+
+    def test_truncated_flag_reflects_finish_reason(self):
+        service, _ = stub_service(
+            lambda _: fake_response(content="abc", finish_reason="length")
+        )
+        result = service.complete("write more")
+        assert result.truncated is True
+
+        service, _ = stub_service(
+            lambda _: fake_response(content="abc", finish_reason="stop")
+        )
+        assert service.complete("done").truncated is False
+
+    def test_truncation_retries_with_doubled_tokens(self):
+        outcomes = iter(
+            [
+                fake_response(
+                    content="partial answer...", finish_reason="length"
+                ),
+                fake_response(
+                    content="the complete long answer exceeds the first budget",
+                    finish_reason="stop",
+                ),
+            ]
+        )
+        service, completions = stub_service(
+            lambda _: next(outcomes), max_tokens=1024
+        )
+        result = service.complete("Write a long explanation.")
+        assert result.content == (
+            "the complete long answer exceeds the first budget"
+        )
+        assert result.finish_reason == "stop"
+        assert result.truncated is False
+        assert completions.calls[0]["max_tokens"] == 1024
+        assert completions.calls[1]["max_tokens"] == 2048
+        assert len(completions.calls) == 2
+
+    def test_truncation_persists_returns_longest_partial(self):
+        outcomes = iter(
+            [
+                fake_response(content="cut off at first...", finish_reason="length"),
+                fake_response(
+                    content="cut off at second, longer...", finish_reason="length"
+                ),
+            ]
+        )
+        service, completions = stub_service(
+            lambda _: next(outcomes), max_tokens=1024
+        )
+        result = service.complete("write even more")
+        assert result.truncated is True
+        assert result.content == "cut off at second, longer..."
+        assert len(completions.calls) == 2
+
+    def test_truncation_retry_failure_returns_original_partial(self):
+        outcomes = iter(
+            [
+                fake_response(content="partial one...", finish_reason="length"),
+                openai.InternalServerError(
+                    "boom",
+                    response=httpx.Response(500, request=REQUEST),
+                    body=None,
+                ),
+            ]
+        )
+        service, completions = stub_service(
+            lambda _: next(outcomes), max_tokens=1024
+        )
+        result = service.complete("hello")
+        assert result.truncated is True
+        assert result.content == "partial one..."
+        assert len(completions.calls) == 2
+
+
 class TestErrorTranslation:
     @pytest.mark.parametrize(
         ("provider_error", "expected_type"),

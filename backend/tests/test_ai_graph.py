@@ -447,6 +447,59 @@ class TestArgumentAndToolFailures:
         assert result.tool_results == {}
 
 
+class TestStreamingTokens:
+    def test_token_callback_receives_final_interpretation(self, stub_tools):
+        tokens: list[str] = []
+        llm = StubLLM(plan_payload=REVENUE_PLAN)
+        graph = build_finance_graph(llm, token_callback=tokens.append)  # type: ignore[arg-type]
+        graph.invoke(
+            {
+                "question": "revenue?",
+                "plan": [],
+                "selection_source": "",
+                "tool_results": {},
+                "tool_errors": {},
+                "interpretation": None,
+                "status": "failed",
+                "errors": [],
+            },
+            config={"configurable": {"finance_db_session": SESSION}},
+        )
+        assert tokens == [llm.explanation]
+
+    def test_no_tokens_when_interpretation_fails(self, stub_tools):
+        tokens: list[str] = []
+        llm = StubLLM(plan_payload=REVENUE_PLAN, explain_error=LLMConnectionError("down"))
+        graph = build_finance_graph(llm, token_callback=tokens.append)  # type: ignore[arg-type]
+        graph.invoke(
+            {
+                "question": "revenue?",
+                "plan": [],
+                "selection_source": "",
+                "tool_results": {},
+                "tool_errors": {},
+                "interpretation": None,
+                "status": "failed",
+                "errors": [],
+            },
+            config={"configurable": {"finance_db_session": SESSION}},
+        )
+        assert tokens == []
+
+    def test_agent_stream_emits_token_then_result_then_done(self, stub_tools):
+        llm = StubLLM(plan_payload=REVENUE_PLAN)
+        agent = FinanceIntelligenceAgent(llm)  # type: ignore[arg-type]
+        events = list(
+            agent.stream(lambda: iter([SESSION]), "revenue?")
+        )
+        kinds = [kind for kind, _ in events]
+        assert kinds == ["token", "result"]  # internal "done" is consumed
+        assert events[0] == ("token", llm.explanation)
+        assert events[1][0] == "result"
+        assert events[1][1].status == "completed"
+        assert events[1][1].interpretation == llm.explanation
+
+
 # --- LLM interpretation failure ------------------------------------------------------
 
 
@@ -629,6 +682,36 @@ class TestStateSafety:
 
         with pytest.raises(Exception):
             get_finance_tool("execute_arbitrary_python")
+
+
+class TestConciseInterpretationPrompt:
+    def test_interpretation_prompt_forbids_verbose_boilerplate(self):
+        """The chat interpretation prompt must cap output complexity and ban
+        verbose filler so dashboard answers stay concise."""
+        lowered = INTERPRETATION_SYSTEM_PROMPT.lower()
+        assert "2-4 short sentences" in lowered
+        assert "never repeat the same metric" in lowered
+        assert "never expose internal field names" in lowered
+        assert "match_rate" in lowered  # only mentioned as a banned example
+        assert "failure_reason" in lowered  # only mentioned as a banned example
+        assert "plain labels" in lowered  # plain labels are mandated
+        assert "match rate" in lowered
+        assert "the system recorded" in lowered  # banned boilerplate
+        assert "this represents the percentage" in lowered
+        assert "narrative only" in lowered
+        # Reconciliation narrations stop at the single most important exception:
+        # no full severity-by-severity dump or mandatory minor-unit value.
+        assert "severity-by-severity" in lowered
+        assert "most important exception" in lowered
+        assert "minor-unit value" in lowered
+        # Categories must be translated to human-readable names and the answer
+        # must hide implementation details and UI noise.
+        assert "duplicate settlement" in lowered  # category translation
+        assert "dataset seed" in lowered  # seed is an internal detail to hide
+        assert "deterministic" in lowered  # word is banned from answers
+        assert "backend" in lowered
+        assert "ai narrative" in lowered  # UI label answers must not add
+        assert "**refresh**" in lowered
 
 
 # --- observability -------------------------------------------------------------------------
@@ -840,8 +923,8 @@ class TestSignalAnalysisIntegration:
 
         real_make_interpret = nodes_mod.make_interpret_node
 
-        def recording_factory(llm_service):
-            node = real_make_interpret(llm_service)
+        def recording_factory(llm_service, token_callback=None):
+            node = real_make_interpret(llm_service, token_callback=token_callback)
 
             def inner(state, config):
                 order.append("interpret")

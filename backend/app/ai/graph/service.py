@@ -91,7 +91,16 @@ class FinanceIntelligenceAgent:
         session_factory: Callable[[], Iterator[Any]],
         question: str,
     ):
-        """Yield ``token`` and final ``result`` events from one graph run."""
+        """Yield ``token`` and final ``result`` events from one graph run.
+
+        Events are yielded as ``(kind, payload)`` tuples where *kind* is
+        one of ``"token"``, ``"result"``, ``"error"`` or ``"keepalive"``.
+
+        A ``"keepalive"`` event is emitted every *keepalive_seconds* when
+        the background graph thread has not produced any other event.  This
+        prevents reverse proxies and browsers from closing idle SSE
+        connections while the LLM is processing.
+        """
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         cancelled = threading.Event()
 
@@ -134,15 +143,24 @@ class FinanceIntelligenceAgent:
                 events.put(("error", exc))
             finally:
                 if db_generator is not None:
-                    db_generator.close()
+                    try:
+                        db_generator.close()
+                    except AttributeError:
+                        pass
                 events.put(("done", None))
 
         worker = threading.Thread(target=run_graph, daemon=True)
         worker.start()
 
+        _KEEPALIVE_SECONDS = 15
+
         try:
             while True:
-                kind, payload = events.get()
+                try:
+                    kind, payload = events.get(timeout=_KEEPALIVE_SECONDS)
+                except queue.Empty:
+                    yield ("keepalive", None)
+                    continue
                 if kind == "done":
                     break
                 yield kind, payload

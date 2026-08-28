@@ -46,6 +46,8 @@ DEFAULT_LLM_MODEL = "gpt-4o-mini"
 DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 DEFAULT_LLM_MAX_RETRIES = 2
 LLM_MAX_RETRIES_UPPER_BOUND = 10
+DEFAULT_LLM_MAX_TOKENS = 1024
+LLM_MAX_TOKENS_UPPER_BOUND = 8192
 
 
 def _is_supported_database_url(url: str) -> bool:
@@ -122,6 +124,8 @@ class Settings(BaseSettings):
 
     llm_max_retries: int = DEFAULT_LLM_MAX_RETRIES
 
+    llm_max_tokens: int | None = DEFAULT_LLM_MAX_TOKENS
+
     # ------------------------------------------------------------------
     # Hugging Face Inference API (convenience aliases)
     # ------------------------------------------------------------------
@@ -184,6 +188,16 @@ class Settings(BaseSettings):
         value: object,
     ) -> object:
         """Treat blank LLM credentials as unset."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("jwt_secret", mode="before")
+    @classmethod
+    def _blank_jwt_secret_is_unset(cls, value: object) -> object:
+        """Treat a blank JWT secret as unset."""
 
         if isinstance(value, str) and not value.strip():
             return None
@@ -292,6 +306,41 @@ class Settings(BaseSettings):
                 "LLM_MAX_RETRIES must be between 0 and "
                 f"{LLM_MAX_RETRIES_UPPER_BOUND} "
                 f"(got {value})"
+            )
+
+        return value
+
+    @field_validator("llm_max_tokens", mode="before")
+    @classmethod
+    def _blank_llm_max_tokens_is_unset(cls, value: object) -> object:
+        """Treat a blank LLM_MAX_TOKENS as unset (provider default)."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator("llm_max_tokens")
+    @classmethod
+    def _validate_llm_max_tokens(
+        cls,
+        value: int | None,
+    ) -> int | None:
+        """Validate the LLM output-token budget.
+
+        ``None`` means no explicit cap (the provider default applies).
+        A configured value must be within the retry ceiling
+        (``LLM_MAX_TOKENS_UPPER_BOUND``) so the automatic truncation
+        retry can at most double it without exceeding provider limits.
+        """
+
+        if value is None:
+            return None
+
+        if not 1 <= value <= LLM_MAX_TOKENS_UPPER_BOUND:
+            raise ValueError(
+                "LLM_MAX_TOKENS must be between 1 and "
+                f"{LLM_MAX_TOKENS_UPPER_BOUND} (got {value})"
             )
 
         return value

@@ -188,9 +188,6 @@ export default function ReconciliationPage() {
           {report.answer && (
             <section className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/60 p-5" data-testid="ai-explanation">
               <h3 className="text-sm font-semibold text-slate-900">AI Explanation</h3>
-              <p className="mt-1 text-xs text-slate-500">
-                Narrative only &mdash; the figures above remain the source of truth.
-              </p>
               <div className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
                 {report.answer}
               </div>

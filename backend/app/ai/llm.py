@@ -120,6 +120,11 @@ class LLMCompletionResult:
     finish_reason: str | None = None
     usage: LLMUsage | None = None
 
+    @property
+    def truncated(self) -> bool:
+        """Return True when the provider cut the response short."""
+        return self.finish_reason == "length"
+
 
 def _translate_provider_error(exc: Exception) -> LLMError:
     """Map an OpenAI SDK exception onto the typed LLM error hierarchy.
@@ -173,7 +178,7 @@ class LLMService:
         base_url: str | None = None,
         timeout_seconds: float = 30.0,
         max_retries: int = 2,
-        max_tokens: int | None = 384,
+        max_tokens: int | None = 1024,
         system_prompt: str = DEFAULT_FINANCE_SYSTEM_PROMPT,
         client: openai.OpenAI | None = None,
     ) -> None:
@@ -215,6 +220,7 @@ class LLMService:
             base_url=settings.llm_base_url,
             timeout_seconds=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
+            max_tokens=settings.llm_max_tokens,
             **overrides,
         )
 
@@ -309,7 +315,14 @@ class LLMService:
     def _create(
         self, *, system: str, user: str, extra: dict[str, Any] | None = None
     ) -> LLMCompletionResult:
-        """One chat-completions call with typed failure translation."""
+        """One chat-completions call with typed failure translation.
+
+        When the provider returns ``finish_reason='length'`` (output
+        truncated by ``max_tokens``), one automatic retry is attempted
+        with doubled token budget.  If the second attempt also truncates,
+        the partial content is returned with ``finish_reason='length'``
+        so callers can detect and handle it.
+        """
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [
@@ -331,6 +344,43 @@ class LLMService:
         except openai.OpenAIError as exc:
             raise _translate_provider_error(exc) from exc
 
+        result = self._extract_result(response)
+
+        # Automatic retry on truncation: double the token budget once.
+        if (
+            result.truncated
+            and self._max_tokens is not None
+            and "max_tokens" not in (extra or {})
+        ):
+            retry_tokens = min(self._max_tokens * 2, 8192)
+            logger.info(
+                "LLM response truncated (finish_reason=length, "
+                "max_tokens=%d); retrying with max_tokens=%d",
+                self._max_tokens,
+                retry_tokens,
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["max_tokens"] = retry_tokens
+            try:
+                retry_response = self._client.chat.completions.create(
+                    **retry_kwargs
+                )
+                retry_result = self._extract_result(retry_response)
+                # Use the retry result if it completed or is longer.
+                if not retry_result.truncated or (
+                    len(retry_result.content) > len(result.content)
+                ):
+                    return retry_result
+            except openai.OpenAIError:
+                # Retry failed; return the original partial result.
+                logger.warning("Truncation retry failed; returning partial result")
+
+        return result
+
+    def _extract_result(
+        self, response: Any
+    ) -> LLMCompletionResult:
+        """Extract a typed result from an OpenAI chat completion response."""
         choices = list(getattr(response, "choices", None) or [])
         if not choices:
             raise LLMInvalidResponseError("LLM response contained no choices")

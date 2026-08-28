@@ -23,7 +23,7 @@ export default function OverviewPage() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold text-slate-900">Overview</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Latest reconciliation run &mdash; synthetic demo dataset (seed 42, 100 records)
+          Latest reconciliation run &mdash; synthetic demo dataset
         </p>
       </header>
 

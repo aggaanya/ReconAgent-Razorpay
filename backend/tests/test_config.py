@@ -7,9 +7,11 @@ from app.core.config import (
     DEFAULT_GEMINI_BASE_URL,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT_SECONDS,
     LLM_MAX_RETRIES_UPPER_BOUND,
+    LLM_MAX_TOKENS_UPPER_BOUND,
     Settings,
 )
 
@@ -21,6 +23,7 @@ CREDENTIAL_ENV_VARS = (
     "LLM_BASE_URL",
     "LLM_TIMEOUT_SECONDS",
     "LLM_MAX_RETRIES",
+    "LLM_MAX_TOKENS",
     "ENVIRONMENT",
     "CORS_ORIGINS",
     "HF_TOKEN",
@@ -194,6 +197,40 @@ class TestLLMConfiguration:
         self,
     ) -> None:
         assert LLM_MAX_RETRIES_UPPER_BOUND == 10
+
+    def test_max_tokens_default(self, clean_env) -> None:
+        settings = make_settings()
+        assert settings.llm_max_tokens == DEFAULT_LLM_MAX_TOKENS == 1024
+
+    def test_max_tokens_override(self, clean_env) -> None:
+        clean_env.setenv("LLM_MAX_TOKENS", "2048")
+        assert make_settings().llm_max_tokens == 2048
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_blank_max_tokens_is_unset(self, clean_env, raw) -> None:
+        # A blank LLM_MAX_TOKENS means "provider default, no explicit cap".
+        clean_env.setenv("LLM_MAX_TOKENS", raw)
+        assert make_settings().llm_max_tokens is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "0",
+            "-1",
+            "8193",  # above the retry-doubling ceiling
+            "not-a-number",
+            "1.5",
+        ],
+    )
+    def test_invalid_max_tokens_rejected(self, clean_env, raw) -> None:
+        clean_env.setenv("LLM_MAX_TOKENS", raw)
+        with pytest.raises(ValidationError):
+            make_settings()
+
+    def test_max_tokens_ceiling_matches_retry_budget(self) -> None:
+        # The validated ceiling is exactly the retry double-cap used by
+        # the LLM service when it re-issues a truncated call.
+        assert LLM_MAX_TOKENS_UPPER_BOUND == 8192
 
     def test_key_masked_in_repr(self, clean_env) -> None:
         secret = "super-secret-llm-key"

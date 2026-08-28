@@ -546,3 +546,104 @@ class TestNarrativeReceivesDeterministicSignals:
             "Signals contain pre-formatted currency strings; all financial "
             "values must be raw minor-unit integers"
         )
+
+
+class TestConciseNarrative:
+    """The dashboard explanation must stay concise: a prompt-level guard and
+    verbatim pass-through of a concise answer."""
+
+    def test_narrative_prompt_enforces_concise_dashboard_style(self):
+        """The explanation is LLM-generated, so the deterministic guard lives
+        in the prompt that produces it: cap the length, ban verbose filler,
+        forbid exposing internal field names, and stop at the single most
+        important exception instead of a severity enumeration."""
+        from app.ai.graph.prompts import RECONCILIATION_EXPLAIN_SYSTEM_PROMPT
+
+        lowered = RECONCILIATION_EXPLAIN_SYSTEM_PROMPT.lower()
+        assert "2-3 short sentences" in lowered
+        assert "never repeat the same metric" in lowered
+        assert "raw key names" in lowered  # the prompt bans emitting them
+        assert "failure_reason" in lowered  # only mentioned as a banned example
+        assert "human-readable labels" in lowered  # plain labels are mandated
+        assert "match rate" in lowered
+        assert "matched records" in lowered
+        assert "total records" in lowered
+        assert "the system recorded" in lowered  # banned boilerplate
+        assert "this represents the percentage" in lowered
+        assert "narrative only" in lowered
+        assert "markdown headers" in lowered
+        # No severity-by-severity dump: the prompt limits the narrative to the
+        # single most important exception unless a breakdown is asked for.
+        assert "severity-by-severity" in lowered
+        assert "most important exception" in lowered
+        assert "breakdown unless the user explicitly asks" in lowered
+        # Concise answers must not require the raw minor-unit value.
+        assert "minor-unit value" in lowered
+        # Internal identifiers and UI noise are banned; categories must be
+        # translated into human-readable names before answering.
+        assert "duplicate settlement" in lowered  # category translation table
+        assert "dataset seed" in lowered  # seed is an internal implementation detail
+        assert "dataset size" in lowered
+        assert "processing time" in lowered
+        assert "throughput" in lowered
+        assert "deterministic" in lowered  # banned from the user-facing wording
+        assert "backend" in lowered
+        assert "ai narrative" in lowered  # UI label the answer must not add
+        assert "**refresh**" in lowered  # UI label the answer must not add
+        assert "dashboard panel titled 'reconciliation explanation'" in lowered
+        # Conciseness: one plain ratio, no restating, no ratio-with-total.
+        assert "of the 100 total records" in lowered  # banned phrasing
+        assert "resulting in a match rate" in lowered  # banned phrasing
+        assert "unresolved records only if useful" in lowered
+        assert "ai explanation" in lowered  # UI label the answer must not add
+
+    def test_concise_explanation_is_returned_verbatim(self, reconcile_client):
+        """A concise answer from the narrative step must reach the dashboard
+        unchanged — no server-side wrapping, headings, or re-phrasing."""
+        concise = (
+            "58% of records were successfully matched. Duplicate settlements "
+            "represent the largest financial exposure at \u20b945,316.82. Two "
+            "records remain unresolved and should be reviewed."
+        )
+        install_agent(StubLLM(explanation=concise))
+
+        body = reconcile_client.post(
+            "/api/v1/ai/reconcile", json=DEFAULT_BODY
+        ).json()
+
+        assert body["status"] == "completed"
+        assert body["answer"] == concise
+        # The answer keeps the real reconciliation facts ...
+        assert "58%" in body["answer"]
+        assert "duplicate settlement" in body["answer"].lower()
+        assert "\u20b945,316.82" in body["answer"]
+        # ... and never leaks internals, enum names, seeds, or UI fluff.
+        for banned in ("The system recorded", "This represents the percentage",
+                       "Narrative only", "### ", "## ", "**", "match_rate",
+                       "matched_count", "total_records", "exception_count",
+                       "unresolved_count", "failure_reason", "critical_count",
+                       "DUPLICATE_SETTLEMENT", "duplicate_settlement", "seed",
+                       "AI narrative", "AI explanation", "deterministic",
+                       "throughput", "processing time", "total records",
+                       "match rate of"):
+            assert banned not in body["answer"]
+
+    def test_default_question_requests_only_user_facing_facts(
+        self, reconcile_client
+    ):
+        """The fallback reconcile question must steer the LLM toward a concise
+        business summary without asking for internal details: no severity
+        enumeration, no dashboard metadata, no dataset seed."""
+        llm = StubLLM()
+        install_agent(llm)
+
+        reconcile_client.post("/api/v1/ai/reconcile", json=DEFAULT_BODY)
+
+        question = llm.interpret_calls[0]["question"].lower()
+        assert "2-3" in question
+        assert "match rate" in question
+        assert "financial impact" in question
+        assert "unresolved" in question
+        for banned in ("severity breakdown", "dashboard panel", "seed",
+                       "dataset", "backend", "internal"):
+            assert banned not in question

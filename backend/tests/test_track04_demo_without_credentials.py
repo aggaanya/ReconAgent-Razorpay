@@ -29,16 +29,20 @@ DEFAULT_MATCH_RATE = round(DEFAULT_MATCHED / DEFAULT_TOTAL * 100, 2)
 @pytest.fixture
 def no_external_credentials(monkeypatch):
     """Remove every optional credential and reset the settings cache."""
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("JWT_SECRET", raising=False)
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    # Empty process-level values override backend/.env; deleting them would
+    # let pydantic-settings reload the developer's real credentials.
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("JWT_SECRET", "")
+    monkeypatch.setenv("LLM_API_KEY", "")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 
 
 class TestDemoWorksWithoutExternalCredentials:
-    def test_app_boots_and_reports_ready(self, client) -> None:
+    def test_app_boots_and_reports_ready(
+        self, client, no_external_credentials
+    ) -> None:
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json() == {"status": "ok"}

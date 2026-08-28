@@ -40,10 +40,9 @@ def build_finance_graph(
     builder.add_node(PLAN_NODE, make_plan_node(llm_service))
     builder.add_node(EXECUTE_NODE, execute_tools_node)
     builder.add_node(ANALYZE_NODE, analyze_signals_node)
-    interpret_node = (
-        make_interpret_node(llm_service)
-        if token_callback is None
-        else make_interpret_node(llm_service, token_callback=token_callback)
+    interpret_node = make_interpret_node(
+        llm_service,
+        token_callback=token_callback,
     )
     builder.add_node(INTERPRET_NODE, interpret_node)
 

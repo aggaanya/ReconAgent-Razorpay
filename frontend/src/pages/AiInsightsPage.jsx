@@ -93,7 +93,7 @@ export default function AiInsightsPage() {
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-sm font-semibold text-slate-700">Reconciliation Explanation</h2>
           <p className="mt-1 text-xs text-slate-500">
-            AI narrative for the latest reconciliation run (seed 42, 100 records).
+            A plain-language explanation of the latest reconciliation run.
           </p>
           <button
             type="button"
@@ -117,7 +117,7 @@ export default function AiInsightsPage() {
                 </div>
               ) : (
                 <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                  No AI narrative available.
+                  No explanation is available right now.
                   {reconcileAnswer.errors.length > 0 && ` ${reconcileAnswer.errors.join(' ')}`}
                 </p>
               )}

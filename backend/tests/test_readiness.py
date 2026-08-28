@@ -13,7 +13,13 @@ def reset_settings_cache():
 
 
 class TestReadinessDefaults:
-    def test_ready_in_development_without_credentials(self, client) -> None:
+    def test_ready_in_development_without_credentials(
+        self, client, monkeypatch, reset_settings_cache
+    ) -> None:
+        monkeypatch.setenv("DATABASE_URL", "")
+        monkeypatch.setenv("JWT_SECRET", "")
+        monkeypatch.setenv("LLM_API_KEY", "")
+        reset_settings_cache.cache_clear()
         response = client.get("/readiness")
         assert response.status_code == 200
         body = response.json()
@@ -51,7 +57,10 @@ class TestReadinessFailures:
         self, client, monkeypatch, reset_settings_cache
     ) -> None:
         monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("DATABASE_URL", "")
+        monkeypatch.setenv("JWT_SECRET", "")
         monkeypatch.setenv("LLM_API_KEY", "")
+        reset_settings_cache.cache_clear()
         response = client.get("/readiness")
         assert response.status_code == 503
         issues = "\n".join(response.json()["issues"])

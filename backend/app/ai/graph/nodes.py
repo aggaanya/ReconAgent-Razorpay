@@ -27,7 +27,7 @@ import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.runnables import RunnableConfig
 
@@ -157,7 +157,7 @@ _KEYWORD_RULES: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("compare", "trends", dict(_DEFAULT_TREND_ARGS)),
     ("success", "payment_performance", {}),
     ("fail", "payment_performance", {}),
-    ("performance", "payment_performance", {}),
+    ("perform", "payment_performance", {}),
     ("transaction", "payment_performance", {}),
     ("overview", "financial_summary", {}),
     ("summary", "financial_summary", {}),
@@ -468,16 +468,18 @@ def _enforce_tool_routing(
     ):
         selections.append({"tool": "settlements", "arguments": {}})
 
+    _payment_health_phrases = (
+        "success rate", "failure rate", "payment perform",
+        "payments perform", "payment health", "payments health",
+        "payment doing", "payments doing", "failed payment",
+    )
     if (
-        any(
-            kw in lowered
-            for kw in (
-                "success rate", "failure rate", "payment performance",
-                "failed payment",
-            )
-        )
+        any(kw in lowered for kw in _payment_health_phrases)
         and "payment_performance" not in selected_names
     ):
+        selections = [
+            s for s in selections if s["tool"] != "financial_summary"
+        ]
         selections.insert(
             0, {"tool": "payment_performance", "arguments": {"period": period}}
         )
@@ -838,7 +840,10 @@ def _truncate_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
 # Interpretation node
 # ---------------------------------------------------------------------------
 
-def make_interpret_node(llm_service: LLMService):
+def make_interpret_node(
+    llm_service: LLMService,
+    token_callback: Callable[[str], None] | None = None,
+):
     """Create the final natural-language interpretation node.
 
     The LLM receives ONLY structured financial facts and detected signals.
@@ -853,6 +858,10 @@ def make_interpret_node(llm_service: LLMService):
 
     If the LLM is unavailable, the graph still returns the retrieved
     financial data and detected signals with a partial status.
+
+    An optional ``token_callback`` receives the final interpretation text
+    once it has been produced, so streaming consumers can forward it over
+    SSE without re-writing the LLM call path.
     """
 
     def interpret_node(
@@ -937,6 +946,22 @@ def make_interpret_node(llm_service: LLMService):
                 if isinstance(content, str) and content.strip():
 
                     interpretation = content.strip()
+
+                    if token_callback is not None:
+                        token_callback(interpretation)
+
+                    # Warn when the provider cut the response short.
+                    if getattr(reply, "truncated", False):
+                        logger.warning(
+                            "LLM interpretation was truncated "
+                            "(finish_reason=length); partial content "
+                            "returned (%d chars)",
+                            len(interpretation),
+                        )
+                        new_errors.append(
+                            "The AI response was truncated due to output "
+                            "length limits. The answer may be incomplete."
+                        )
 
                     logger.info(
                         "Financial interpretation generated successfully"

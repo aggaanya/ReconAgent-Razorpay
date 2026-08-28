@@ -165,6 +165,14 @@ class AiReconcileCompareRequest(BaseModel):
     current_size: int = Field(
         default=100, ge=50, le=5000, description="Current batch size"
     )
+    max_settlement_delay_days: int = Field(
+        default=DEFAULT_MAX_SETTLEMENT_DELAY_DAYS,
+        ge=0,
+        description=(
+            "Settlement-delay tolerance in days; later settlements are "
+            "flagged SETTLEMENT_DELAY"
+        ),
+    )
     explain: bool = Field(
         default=False,
         description="Optionally attach an LLM drift explanation",
